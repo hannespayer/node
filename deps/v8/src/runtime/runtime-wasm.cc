@@ -29,15 +29,10 @@ Context* GetNativeContextFromWasmInstanceOnStackTop(Isolate* isolate) {
   // On top: C entry stub.
   DCHECK_EQ(StackFrame::EXIT, it.frame()->type());
   it.Advance();
-  // Next: the wasm (compiled or interpreted) frame.
-  WasmInstanceObject* instance = nullptr;
-  if (it.frame()->is_wasm_compiled()) {
-    instance = WasmCompiledFrame::cast(it.frame())->wasm_instance();
-  } else {
-    DCHECK(it.frame()->is_wasm_interpreter_entry());
-    instance = WasmInterpreterEntryFrame::cast(it.frame())->wasm_instance();
-  }
-  return instance->native_context();
+  // Next: the wasm compiled frame.
+  DCHECK(it.frame()->is_wasm_compiled());
+  WasmCompiledFrame* frame = WasmCompiledFrame::cast(it.frame());
+  return frame->wasm_instance()->native_context();
 }
 
 class ClearThreadInWasmScope {
@@ -125,16 +120,6 @@ RUNTIME_FUNCTION(Runtime_WasmThrowCreate) {
              LanguageMode::kStrict)
              .is_null());
   return *exception;
-}
-
-RUNTIME_FUNCTION(Runtime_WasmThrow) {
-  // TODO(kschimpf): Can this be replaced with equivalent TurboFan code/calls.
-  SealHandleScope shs(isolate);
-  DCHECK_EQ(1, args.length());
-  DCHECK_NULL(isolate->context());
-  isolate->set_context(GetNativeContextFromWasmInstanceOnStackTop(isolate));
-  CONVERT_ARG_CHECKED(Object, except_obj, 0);
-  return isolate->Throw(except_obj);
 }
 
 RUNTIME_FUNCTION(Runtime_WasmExceptionGetTag) {

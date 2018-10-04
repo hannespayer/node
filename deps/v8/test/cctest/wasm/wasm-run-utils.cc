@@ -41,13 +41,15 @@ TestingModuleBuilder::TestingModuleBuilder(
   if (maybe_import) {
     // Manually compile a wasm to JS wrapper and insert it into the instance.
     CodeSpaceMemoryModificationScope modification_scope(isolate_->heap());
-    MaybeHandle<Code> code = compiler::CompileWasmToJSWrapper(
-        isolate_, maybe_import->js_function, maybe_import->sig,
-        maybe_import_index, test_module_->origin,
+    auto kind = compiler::GetWasmImportCallKind(maybe_import->js_function,
+                                                maybe_import->sig);
+    MaybeHandle<Code> code = compiler::CompileWasmImportCallWrapper(
+        isolate_, kind, maybe_import->sig, maybe_import_index,
+        test_module_->origin,
         trap_handler::IsTrapHandlerEnabled() ? kUseTrapHandler
                                              : kNoTrapHandler);
-    auto wasm_to_js_wrapper = native_module_->AddCodeCopy(
-        code.ToHandleChecked(), WasmCode::kWasmToJsWrapper, maybe_import_index);
+    auto wasm_to_js_wrapper = native_module_->AddImportWrapper(
+        code.ToHandleChecked(), maybe_import_index);
 
     ImportedFunctionEntry(instance_object_, maybe_import_index)
         .set_wasm_to_js(*maybe_import->js_function, wasm_to_js_wrapper);
@@ -124,7 +126,7 @@ Handle<JSFunction> TestingModuleBuilder::WrapCode(uint32_t index) {
   Link();
   FunctionSig* sig = test_module_->functions[index].sig;
   MaybeHandle<Code> maybe_ret_code =
-      compiler::CompileJSToWasmWrapper(isolate_, native_module_, sig, false);
+      compiler::CompileJSToWasmWrapper(isolate_, sig, false);
   Handle<Code> ret_code = maybe_ret_code.ToHandleChecked();
   Handle<JSFunction> ret = WasmExportedFunction::New(
       isolate_, instance_object(), MaybeHandle<String>(),

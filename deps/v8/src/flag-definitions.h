@@ -225,33 +225,31 @@ DEFINE_IMPLICATION(harmony_class_fields, harmony_private_fields)
 #endif
 
 // Features that are complete (but still behind --harmony/es-staging flag).
-#define HARMONY_STAGED_BASE(V)                                             \
+#define HARMONY_STAGED(V)                                                  \
   V(harmony_public_fields, "harmony public fields in class literals")      \
   V(harmony_private_fields, "harmony private fields in class literals")    \
   V(harmony_numeric_separator, "harmony numeric separator between digits") \
   V(harmony_string_matchall, "harmony String.prototype.matchAll")          \
-  V(harmony_static_fields, "harmony static fields in class literals")
-
-#ifdef V8_INTL_SUPPORT
-#define HARMONY_STAGED(V) \
-  HARMONY_STAGED_BASE(V)  \
-  V(harmony_intl_relative_time_format, "Intl.RelativeTimeFormat")
-#else
-#define HARMONY_STAGED(V) HARMONY_STAGED_BASE(V)
-#endif
+  V(harmony_static_fields, "harmony static fields in class literals")      \
+  V(harmony_json_stringify, "Well-formed JSON.stringify")
 
 // Features that are shipping (turned on by default, but internal flag remains).
-#define HARMONY_SHIPPING(V)                                              \
-  V(harmony_string_trimming, "harmony String.prototype.trim{Start,End}") \
+#define HARMONY_SHIPPING_BASE(V)                                         \
   V(harmony_sharedarraybuffer, "harmony sharedarraybuffer")              \
-  V(harmony_function_tostring, "harmony Function.prototype.toString")    \
   V(harmony_import_meta, "harmony import.meta property")                 \
-  V(harmony_bigint, "harmony arbitrary precision integers")              \
   V(harmony_dynamic_import, "harmony dynamic import")                    \
   V(harmony_array_prototype_values, "harmony Array.prototype.values")    \
   V(harmony_array_flat, "harmony Array.prototype.{flat,flatMap}")        \
   V(harmony_symbol_description, "harmony Symbol.prototype.description")  \
   V(harmony_global, "harmony global")
+
+#ifdef V8_INTL_SUPPORT
+#define HARMONY_SHIPPING(V) \
+  HARMONY_SHIPPING_BASE(V)  \
+  V(harmony_intl_relative_time_format, "Intl.RelativeTimeFormat")
+#else
+#define HARMONY_SHIPPING(V) HARMONY_SHIPPING_BASE(V)
+#endif
 
 // Once a shipping feature has proved stable in the wild, it will be dropped
 // from HARMONY_SHIPPING, all occurrences of the FLAG_ variable are removed,
@@ -927,11 +925,6 @@ DEFINE_BOOL(cache_prototype_transitions, true, "cache prototype transitions")
 DEFINE_BOOL(compiler_dispatcher, false, "enable compiler dispatcher")
 DEFINE_BOOL(trace_compiler_dispatcher, false,
             "trace compiler dispatcher activity")
-
-// compiler-dispatcher-job.cc
-DEFINE_BOOL(
-    trace_compiler_dispatcher_jobs, false,
-    "trace progress of individual jobs managed by the compiler dispatcher")
 
 // cpu-profiler.cc
 DEFINE_INT(cpu_profiler_sampling_interval, 1000,

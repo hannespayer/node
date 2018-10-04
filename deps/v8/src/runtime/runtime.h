@@ -55,6 +55,8 @@ namespace internal {
   F(TrySliceSimpleNonFastElements, 3, 1)
 
 #define FOR_EACH_INTRINSIC_ATOMICS(F)  \
+  F(AtomicsLoad64, 2, 1)               \
+  F(AtomicsStore64, 3, 1)              \
   F(AtomicsAdd, 3, 1)                  \
   F(AtomicsAnd, 3, 1)                  \
   F(AtomicsCompareExchange, 4, 1)      \
@@ -95,13 +97,9 @@ namespace internal {
   F(ThrowUnsupportedSuperError, 0, 1)
 
 #define FOR_EACH_INTRINSIC_COLLECTIONS(F) \
-  F(GetWeakMapEntries, 2, 1)              \
-  F(GetWeakSetValues, 2, 1)               \
   F(MapGrow, 1, 1)                        \
-  F(MapIteratorClone, 1, 1)               \
   F(MapShrink, 1, 1)                      \
   F(SetGrow, 1, 1)                        \
-  F(SetIteratorClone, 1, 1)               \
   F(SetShrink, 1, 1)                      \
   F(TheHole, 0, 1)                        \
   F(WeakCollectionDelete, 3, 1)           \
@@ -173,15 +171,12 @@ namespace internal {
 
 #define FOR_EACH_INTRINSIC_FUNCTION(F)     \
   F(Call, -1 /* >= 2 */, 1)                \
-  F(FunctionGetName, 1, 1)                 \
   F(FunctionGetScriptSource, 1, 1)         \
   F(FunctionGetScriptId, 1, 1)             \
   F(FunctionGetScriptSourcePosition, 1, 1) \
   F(FunctionGetSourceCode, 1, 1)           \
   F(FunctionIsAPIFunction, 1, 1)           \
-  F(IsConstructor, 1, 1)                   \
   F(IsFunction, 1, 1)                      \
-  F(SetCode, 2, 1)                         \
   F(SetNativeFlag, 1, 1)
 
 #define FOR_EACH_INTRINSIC_GENERATOR(F)       \
@@ -199,7 +194,6 @@ namespace internal {
   F(AvailableLocalesOf, 1, 1)                \
   F(CanonicalizeLanguageTag, 1, 1)           \
   F(DateCacheVersion, 0, 1)                  \
-  F(DateTimeFormatResolvedOptions, 1, 1)     \
   F(FormatList, 2, 1)                        \
   F(FormatListToParts, 2, 1)                 \
   F(GetDefaultICULocale, 0, 1)               \
@@ -262,8 +256,6 @@ namespace internal {
   F(CreateObjectLiteral, 4, 1)                      \
   F(CreateObjectLiteralWithoutAllocationSite, 2, 1) \
   F(CreateRegExpLiteral, 4, 1)
-
-#define FOR_EACH_INTRINSIC_MATHS(F) F(GenerateRandomNumbers, 0, 1)
 
 #define FOR_EACH_INTRINSIC_MODULE(F) \
   F(DynamicImportCall, 2, 1)         \
@@ -418,7 +410,6 @@ namespace internal {
   F(StringBuilderConcat, 3, 1)            \
   F(StringBuilderJoin, 3, 1)              \
   F(StringCharCodeAt, 2, 1)               \
-  F(StringCharFromCode, 1, 1)             \
   F(StringEqual, 2, 1)                    \
   F(StringGreaterThan, 2, 1)              \
   F(StringGreaterThanOrEqual, 2, 1)       \
@@ -429,7 +420,6 @@ namespace internal {
   F(StringLessThan, 2, 1)                 \
   F(StringLessThanOrEqual, 2, 1)          \
   F(StringMaxLength, 0, 1)                \
-  F(StringNotEqual, 2, 1)                 \
   F(StringReplaceOneCharWithString, 3, 1) \
   F(StringSubstring, 3, 1)                \
   F(StringToArray, 2, 1)                  \
@@ -512,6 +502,7 @@ namespace internal {
   F(ArraySpeciesProtector, 0, 1)              \
   F(TypedArraySpeciesProtector, 0, 1)         \
   F(PromiseSpeciesProtector, 0, 1)            \
+  F(StringIteratorProtector, 0, 1)            \
   F(SystemBreak, 0, 1)                        \
   F(TraceEnter, 0, 1)                         \
   F(TraceExit, 1, 1)                          \
@@ -541,7 +532,6 @@ namespace internal {
   F(WasmGrowMemory, 2, 1)          \
   F(WasmRunInterpreter, 2, 1)      \
   F(WasmStackGuard, 0, 1)          \
-  F(WasmThrow, 1, 1)               \
   F(WasmThrowCreate, 2, 1)         \
   F(WasmThrowTypeError, 0, 1)      \
   F(WasmCompileLazy, 2, 1)
@@ -590,7 +580,6 @@ namespace internal {
   FOR_EACH_INTRINSIC_INTERPRETER(F)         \
   FOR_EACH_INTRINSIC_INTL(F)                \
   FOR_EACH_INTRINSIC_LITERALS(F)            \
-  FOR_EACH_INTRINSIC_MATHS(F)               \
   FOR_EACH_INTRINSIC_MODULE(F)              \
   FOR_EACH_INTRINSIC_NUMBERS(F)             \
   FOR_EACH_INTRINSIC_OBJECT(F)              \

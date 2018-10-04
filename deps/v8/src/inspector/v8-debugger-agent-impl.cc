@@ -333,7 +333,7 @@ void V8DebuggerAgentImpl::enableImpl() {
 
   if (isPaused()) {
     didPause(0, v8::Local<v8::Value>(), std::vector<v8::debug::BreakpointId>(),
-             false, false, false, false);
+             v8::debug::kException, false, false, false);
   }
 }
 
@@ -857,10 +857,6 @@ Response V8DebuggerAgentImpl::setScriptSource(
   ScriptsMap::iterator it = m_scripts.find(scriptId);
   if (it == m_scripts.end()) {
     return Response::Error("No script with given id found");
-  }
-  if (it->second->isModule()) {
-    // TODO(kozyatinskiy): LiveEdit should support ES6 module
-    return Response::Error("Editing module's script is not supported.");
   }
   int contextId = it->second->executionContextId();
   InspectedContext* inspected = m_inspector->getContext(contextId);
@@ -1510,7 +1506,8 @@ void V8DebuggerAgentImpl::didParseSource(
 void V8DebuggerAgentImpl::didPause(
     int contextId, v8::Local<v8::Value> exception,
     const std::vector<v8::debug::BreakpointId>& hitBreakpoints,
-    bool isPromiseRejection, bool isUncaught, bool isOOMBreak, bool isAssert) {
+    v8::debug::ExceptionType exceptionType, bool isUncaught, bool isOOMBreak,
+    bool isAssert) {
   v8::HandleScope handles(m_isolate);
 
   std::vector<BreakReason> hitReasons;
@@ -1526,7 +1523,7 @@ void V8DebuggerAgentImpl::didPause(
     m_session->findInjectedScript(contextId, injectedScript);
     if (injectedScript) {
       String16 breakReason =
-          isPromiseRejection
+          exceptionType == v8::debug::kPromiseRejection
               ? protocol::Debugger::Paused::ReasonEnum::PromiseRejection
               : protocol::Debugger::Paused::ReasonEnum::Exception;
       std::unique_ptr<protocol::Runtime::RemoteObject> obj;

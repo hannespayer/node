@@ -16,6 +16,7 @@
 #include "src/ic/stub-cache.h"
 #include "src/interpreter/interpreter.h"
 #include "src/isolate.h"
+#include "src/math-random.h"
 #include "src/objects-inl.h"
 #include "src/regexp/regexp-stack.h"
 #include "src/simulator-base.h"
@@ -719,6 +720,10 @@ ExternalReference ExternalReference::printf_function() {
   return ExternalReference(Redirect(FUNCTION_ADDR(std::printf)));
 }
 
+ExternalReference ExternalReference::refill_math_random() {
+  return ExternalReference(Redirect(FUNCTION_ADDR(MathRandom::RefillCache)));
+}
+
 template <typename SubjectChar, typename PatternChar>
 ExternalReference ExternalReference::search_string_raw() {
   auto f = SearchStringRaw<SubjectChar, PatternChar>;
@@ -746,14 +751,13 @@ ExternalReference ExternalReference::orderedhashmap_gethash_raw() {
   return ExternalReference(Redirect(FUNCTION_ADDR(f)));
 }
 
-ExternalReference ExternalReference::get_or_create_hash_raw(Isolate* isolate) {
+ExternalReference ExternalReference::get_or_create_hash_raw() {
   typedef Smi* (*GetOrCreateHash)(Isolate * isolate, Object * key);
   GetOrCreateHash f = Object::GetOrCreateHash;
   return ExternalReference(Redirect(FUNCTION_ADDR(f)));
 }
 
-ExternalReference ExternalReference::jsreceiver_create_identity_hash(
-    Isolate* isolate) {
+ExternalReference ExternalReference::jsreceiver_create_identity_hash() {
   typedef Smi* (*CreateIdentityHash)(Isolate * isolate, JSReceiver * key);
   CreateIdentityHash f = JSReceiver::CreateIdentityHash;
   return ExternalReference(Redirect(FUNCTION_ADDR(f)));

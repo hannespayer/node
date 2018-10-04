@@ -870,17 +870,18 @@ class RuntimeCallTimer final {
   V(BoundFunctionNameGetter)                   \
   V(BoundFunctionLengthGetter)                 \
   V(CompileBackgroundAnalyse)                  \
+  V(CompileBackgroundCompileTask)              \
   V(CompileBackgroundEval)                     \
+  V(CompileBackgroundFunction)                 \
   V(CompileBackgroundIgnition)                 \
   V(CompileBackgroundScript)                   \
   V(CompileBackgroundRewriteReturnResult)      \
   V(CompileBackgroundScopeAnalysis)            \
-  V(CompileBackgroundUnoptimizedCompileJob)    \
   V(CompileDeserialize)                        \
   V(CompileEval)                               \
   V(CompileAnalyse)                            \
   V(CompileEnqueueOnDispatcher)                \
-  V(CompileFinalizeUnoptimizedCompileJob)      \
+  V(CompileFinalizeBackgroundCompileTask)      \
   V(CompileFinishNowOnDispatcher)              \
   V(CompileFunction)                           \
   V(CompileGetFromOptimizedCodeMap)            \
@@ -890,7 +891,6 @@ class RuntimeCallTimer final {
   V(CompileScopeAnalysis)                      \
   V(CompileScript)                             \
   V(CompileSerialize)                          \
-  V(CompileUnoptimizedCompileJob)              \
   V(CompileWaitForDispatcher)                  \
   V(DeoptimizeCode)                            \
   V(FunctionCallback)                          \
@@ -1222,7 +1222,7 @@ class RuntimeCallTimerScope {
   HR(wasm_memory_allocation_result, V8.WasmMemoryAllocationResult, 0, 3, 4)    \
   HR(wasm_address_space_usage_mb, V8.WasmAddressSpaceUsageMiB, 0, 1 << 20,     \
      128)                                                                      \
-  HR(wasm_module_code_size_mb, V8.WasmModuleCodeSizeMiB, 0, 256, 64)
+  HR(wasm_module_code_size_mb, V8.WasmModuleCodeSizeMiB, 0, 1024, 64)
 
 #define HISTOGRAM_TIMER_LIST(HT)                                               \
   /* Garbage collection timers. */                                             \
@@ -1313,6 +1313,8 @@ class RuntimeCallTimerScope {
      V8.CompileScriptMicroSeconds.NoCache.CacheTooCold, 1000000, MICROSECOND)  \
   HT(compile_script_on_background,                                             \
      V8.CompileScriptMicroSeconds.BackgroundThread, 1000000, MICROSECOND)      \
+  HT(compile_function_on_background,                                           \
+     V8.CompileFunctionMicroSeconds.BackgroundThread, 1000000, MICROSECOND)    \
   HT(gc_parallel_task_latency, V8.GC.ParallelTaskLatencyMicroSeconds, 1000000, \
      MICROSECOND)
 

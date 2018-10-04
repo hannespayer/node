@@ -313,10 +313,15 @@ class PipelineData {
                                    : wasm_engine_->GetCodeTracer();
   }
 
-  Typer* CreateTyper(Typer::Flags flags) {
-    CHECK_NULL(typer_);
-    typer_ = new Typer(isolate(), js_heap_broker(), flags, graph());
+  Typer* CreateTyper() {
+    DCHECK_NULL(typer_);
+    typer_ = new Typer(js_heap_broker(), typer_flags_, graph());
     return typer_;
+  }
+
+  void AddTyperFlag(Typer::Flag flag) {
+    DCHECK_NULL(typer_);
+    typer_flags_ |= flag;
   }
 
   void DeleteTyper() {
@@ -448,6 +453,7 @@ class PipelineData {
   MaybeHandle<Code> code_;
   CodeGenerator* code_generator_ = nullptr;
   Typer* typer_ = nullptr;
+  Typer::Flags typer_flags_ = Typer::kNoFlags;
 
   // All objects in the following group of fields are allocated in graph_zone_.
   // They are all set to nullptr when the graph_zone_ is destroyed.
@@ -1045,7 +1051,6 @@ class PipelineWasmCompilationJob final : public OptimizedCompilationJob {
 PipelineWasmCompilationJob::Status PipelineWasmCompilationJob::PrepareJobImpl(
     Isolate* isolate) {
   UNREACHABLE();  // Prepare should always be skipped for WasmCompilationJob.
-  return SUCCEEDED;
 }
 
 PipelineWasmCompilationJob::Status
@@ -1125,7 +1130,6 @@ PipelineWasmCompilationJob::ExecuteJobImpl() {
 PipelineWasmCompilationJob::Status PipelineWasmCompilationJob::FinalizeJobImpl(
     Isolate* isolate) {
   UNREACHABLE();  // Finalize should always be skipped for WasmCompilationJob.
-  return SUCCEEDED;
 }
 
 template <typename Phase>
@@ -1157,10 +1161,11 @@ struct GraphBuilderPhase {
     if (data->info()->is_bailout_on_uninitialized()) {
       flags |= JSTypeHintLowering::kBailoutOnUninitialized;
     }
+    CallFrequency frequency = CallFrequency(1.0f);
     BytecodeGraphBuilder graph_builder(
         temp_zone, data->info()->shared_info(),
         handle(data->info()->closure()->feedback_vector(), data->isolate()),
-        data->info()->osr_offset(), data->jsgraph(), CallFrequency(1.0f),
+        data->info()->osr_offset(), data->jsgraph(), frequency,
         data->source_positions(), data->native_context(),
         SourcePosition::kNotInlined, flags, true,
         data->info()->is_analyze_environment_liveness());
@@ -1260,6 +1265,11 @@ struct TyperPhase {
   void Run(PipelineData* data, Zone* temp_zone, Typer* typer) {
     NodeVector roots(temp_zone);
     data->jsgraph()->GetCachedNodes(&roots);
+
+    // Make sure we always type True and False. Needed for escape analysis.
+    roots.push_back(data->jsgraph()->TrueConstant());
+    roots.push_back(data->jsgraph()->FalseConstant());
+
     LoopVariableOptimizer induction_vars(data->jsgraph()->graph(),
                                          data->common(), temp_zone);
     if (FLAG_turbo_loop_variable) induction_vars.Run();
@@ -1314,7 +1324,11 @@ struct CopyMetadataForConcurrentCompilePhase {
     JSHeapCopyReducer heap_copy_reducer(data->js_heap_broker());
     AddReducer(data, &graph_reducer, &heap_copy_reducer);
     graph_reducer.ReduceGraph();
-    data->js_heap_broker()->StopSerializing();
+
+    // Some nodes that are no longer in the graph might still be in the cache.
+    NodeVector cached_nodes(temp_zone);
+    data->jsgraph()->GetCachedNodes(&cached_nodes);
+    for (Node* const node : cached_nodes) graph_reducer.ReduceNode(node);
   }
 };
 
@@ -1406,32 +1420,6 @@ struct LoopExitEliminationPhase {
 
   void Run(PipelineData* data, Zone* temp_zone) {
     LoopPeeler::EliminateLoopExits(data->graph(), temp_zone);
-  }
-};
-
-struct ConcurrentOptimizationPrepPhase {
-  static const char* phase_name() { return "concurrency preparation"; }
-
-  void Run(PipelineData* data, Zone* temp_zone) {
-    // Make sure we cache these code stubs.
-    data->jsgraph()->CEntryStubConstant(1);
-    data->jsgraph()->CEntryStubConstant(2);
-
-    // TODO(turbofan): Remove this line once the Array constructor code
-    // is a proper builtin and no longer a CodeStub.
-    data->jsgraph()->ArrayConstructorStubConstant();
-
-    // This is needed for escape analysis.
-    NodeProperties::SetType(
-        data->jsgraph()->FalseConstant(),
-        Type::HeapConstant(data->js_heap_broker(),
-                           data->isolate()->factory()->false_value(),
-                           data->jsgraph()->zone()));
-    NodeProperties::SetType(
-        data->jsgraph()->TrueConstant(),
-        Type::HeapConstant(data->js_heap_broker(),
-                           data->isolate()->factory()->true_value(),
-                           data->jsgraph()->zone()));
   }
 };
 
@@ -2022,8 +2010,6 @@ bool PipelineImpl::CreateGraph() {
     data->node_origins()->AddDecorator();
   }
 
-  Run<SerializeStandardObjectsPhase>();
-
   Run<GraphBuilderPhase>();
   RunPrintAndVerify(GraphBuilderPhase::phase_name(), true);
 
@@ -2035,34 +2021,32 @@ bool PipelineImpl::CreateGraph() {
   Run<EarlyGraphTrimmingPhase>();
   RunPrintAndVerify(EarlyGraphTrimmingPhase::phase_name(), true);
 
-  // Run the type-sensitive lowerings and optimizations on the graph.
+  // Determine the Typer operation flags.
   {
-    // Determine the Typer operation flags.
-    Typer::Flags flags = Typer::kNoFlags;
     if (is_sloppy(info()->shared_info()->language_mode()) &&
         info()->shared_info()->IsUserJavaScript()) {
       // Sloppy mode functions always have an Object for this.
-      flags |= Typer::kThisIsReceiver;
+      data->AddTyperFlag(Typer::kThisIsReceiver);
     }
     if (IsClassConstructor(info()->shared_info()->kind())) {
       // Class constructors cannot be [[Call]]ed.
-      flags |= Typer::kNewTargetIsReceiver;
+      data->AddTyperFlag(Typer::kNewTargetIsReceiver);
     }
+  }
 
-    // Type the graph and keep the Typer running on newly created nodes within
-    // this scope; the Typer is automatically unlinked from the Graph once we
-    // leave this scope below.
-
-    Run<TyperPhase>(data->CreateTyper(flags));
-    RunPrintAndVerify(TyperPhase::phase_name());
-
-    // Do some hacky things to prepare for the optimization phase.
-    // (caching handles, etc.).
-    Run<ConcurrentOptimizationPrepPhase>();
-
+  // Run the type-sensitive lowerings and optimizations on the graph.
+  {
     if (FLAG_concurrent_compiler_frontend) {
+      data->js_heap_broker()->StartSerializing();
+      Run<SerializeStandardObjectsPhase>();
       Run<CopyMetadataForConcurrentCompilePhase>();
+      data->js_heap_broker()->StopSerializing();
     } else {
+      data->js_heap_broker()->SetNativeContextRef();
+      // Type the graph and keep the Typer running such that new nodes get
+      // automatically typed when they are created.
+      Run<TyperPhase>(data->CreateTyper());
+      RunPrintAndVerify(TyperPhase::phase_name());
       Run<TypedLoweringPhase>();
       RunPrintAndVerify(TypedLoweringPhase::phase_name());
       data->DeleteTyper();
@@ -2080,6 +2064,10 @@ bool PipelineImpl::OptimizeGraph(Linkage* linkage) {
   data->BeginPhaseKind("lowering");
 
   if (FLAG_concurrent_compiler_frontend) {
+    // Type the graph and keep the Typer running such that new nodes get
+    // automatically typed when they are created.
+    Run<TyperPhase>(data->CreateTyper());
+    RunPrintAndVerify(TyperPhase::phase_name());
     Run<TypedLoweringPhase>();
     RunPrintAndVerify(TypedLoweringPhase::phase_name());
     data->DeleteTyper();
@@ -2584,6 +2572,9 @@ std::ostream& operator<<(std::ostream& out, const BlockStartsAsJSON& s) {
 
 MaybeHandle<Code> PipelineImpl::FinalizeCode() {
   PipelineData* data = this->data_;
+  if (data->js_heap_broker() && FLAG_concurrent_compiler_frontend) {
+    data->js_heap_broker()->Retire();
+  }
   Run<FinalizeCodePhase>();
 
   MaybeHandle<Code> maybe_code = data->code();

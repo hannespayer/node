@@ -2010,7 +2010,7 @@ Node* WasmGraphBuilder::BuildCcallConvertFloat(Node* input,
 }
 
 Node* WasmGraphBuilder::GrowMemory(Node* input) {
-  SetNeedsStackCheck();
+  needs_stack_check_ = true;
 
   WasmGrowMemoryDescriptor interface_descriptor;
   auto call_descriptor = Linkage::GetStubCallDescriptor(
@@ -2046,7 +2046,7 @@ uint32_t WasmGraphBuilder::GetExceptionEncodedSize(
 Node* WasmGraphBuilder::Throw(uint32_t exception_index,
                               const wasm::WasmException* exception,
                               const Vector<Node*> values) {
-  SetNeedsStackCheck();
+  needs_stack_check_ = true;
   uint32_t encoded_size = GetExceptionEncodedSize(exception);
   Node* create_parameters[] = {
       LoadExceptionTagFromTable(exception_index),
@@ -2083,7 +2083,16 @@ Node* WasmGraphBuilder::Throw(uint32_t exception_index,
     }
   }
   DCHECK_EQ(encoded_size, index);
-  return BuildCallToRuntime(Runtime::kWasmThrow, &except_obj, 1);
+  WasmThrowDescriptor interface_descriptor;
+  auto call_descriptor = Linkage::GetStubCallDescriptor(
+      mcgraph()->zone(), interface_descriptor,
+      interface_descriptor.GetStackParameterCount(), CallDescriptor::kNoFlags,
+      Operator::kNoProperties, StubCallMode::kCallWasmRuntimeStub);
+  Node* call_target = mcgraph()->RelocatableIntPtrConstant(
+      wasm::WasmCode::kWasmThrow, RelocInfo::WASM_STUB_CALL);
+  return SetEffect(SetControl(
+      graph()->NewNode(mcgraph()->common()->Call(call_descriptor), call_target,
+                       except_obj, Effect(), Control())));
 }
 
 void WasmGraphBuilder::BuildEncodeException32BitValue(Node* except_obj,
@@ -2121,9 +2130,17 @@ Node* WasmGraphBuilder::BuildDecodeException32BitValue(Node* const* values,
 }
 
 Node* WasmGraphBuilder::Rethrow(Node* except_obj) {
-  SetNeedsStackCheck();
-  Node* result = BuildCallToRuntime(Runtime::kWasmThrow, &except_obj, 1);
-  return result;
+  needs_stack_check_ = true;
+  WasmThrowDescriptor interface_descriptor;
+  auto call_descriptor = Linkage::GetStubCallDescriptor(
+      mcgraph()->zone(), interface_descriptor,
+      interface_descriptor.GetStackParameterCount(), CallDescriptor::kNoFlags,
+      Operator::kNoProperties, StubCallMode::kCallWasmRuntimeStub);
+  Node* call_target = mcgraph()->RelocatableIntPtrConstant(
+      wasm::WasmCode::kWasmThrow, RelocInfo::WASM_STUB_CALL);
+  return SetEffect(SetControl(
+      graph()->NewNode(mcgraph()->common()->Call(call_descriptor), call_target,
+                       except_obj, Effect(), Control())));
 }
 
 Node* WasmGraphBuilder::ExceptionTagEqual(Node* caught_tag,
@@ -2140,7 +2157,7 @@ Node* WasmGraphBuilder::LoadExceptionTagFromTable(uint32_t exception_index) {
 }
 
 Node* WasmGraphBuilder::GetExceptionTag(Node* except_obj) {
-  SetNeedsStackCheck();
+  needs_stack_check_ = true;
   return BuildCallToRuntime(Runtime::kWasmExceptionGetTag, &except_obj, 1);
 }
 
@@ -2535,7 +2552,7 @@ Node* WasmGraphBuilder::BuildWasmCall(wasm::FunctionSig* sig, Node** args,
     DCHECK_NOT_NULL(instance_node_);
     instance_node = instance_node_.get();
   }
-  SetNeedsStackCheck();
+  needs_stack_check_ = true;
   const size_t params = sig->parameter_count();
   const size_t extra = 3;  // instance_node, effect, and control.
   const size_t count = 1 + params + extra;
@@ -2575,10 +2592,10 @@ Node* WasmGraphBuilder::BuildWasmCall(wasm::FunctionSig* sig, Node** args,
   return call;
 }
 
-Node* WasmGraphBuilder::BuildImportWasmCall(wasm::FunctionSig* sig, Node** args,
-                                            Node*** rets,
-                                            wasm::WasmCodePosition position,
-                                            int func_index) {
+Node* WasmGraphBuilder::BuildImportCall(wasm::FunctionSig* sig, Node** args,
+                                        Node*** rets,
+                                        wasm::WasmCodePosition position,
+                                        int func_index) {
   // Load the instance from the imported_instances array at a known offset.
   Node* imported_instances = LOAD_INSTANCE_FIELD(ImportedFunctionInstances,
                                                  MachineType::TaggedPointer());
@@ -2596,10 +2613,10 @@ Node* WasmGraphBuilder::BuildImportWasmCall(wasm::FunctionSig* sig, Node** args,
                        untrusted_code_mitigations_ ? kRetpoline : kNoRetpoline);
 }
 
-Node* WasmGraphBuilder::BuildImportWasmCall(wasm::FunctionSig* sig, Node** args,
-                                            Node*** rets,
-                                            wasm::WasmCodePosition position,
-                                            Node* func_index) {
+Node* WasmGraphBuilder::BuildImportCall(wasm::FunctionSig* sig, Node** args,
+                                        Node*** rets,
+                                        wasm::WasmCodePosition position,
+                                        Node* func_index) {
   // Load the instance from the imported_instances array.
   Node* imported_instances = LOAD_INSTANCE_FIELD(ImportedFunctionInstances,
                                                  MachineType::TaggedPointer());
@@ -2635,7 +2652,7 @@ Node* WasmGraphBuilder::CallDirect(uint32_t index, Node** args, Node*** rets,
 
   if (env_ && index < env_->module->num_imported_functions) {
     // Call to an imported function.
-    return BuildImportWasmCall(sig, args, rets, position, index);
+    return BuildImportCall(sig, args, rets, position, index);
   }
 
   // A direct call to a wasm function defined in this module.
@@ -4370,8 +4387,8 @@ class WasmWrapperGraphBuilder : public WasmGraphBuilder {
   Node* BuildLoadFunctionDataFromExportedFunction(Node* closure) {
     Node* shared = SetEffect(graph()->NewNode(
         jsgraph()->machine()->Load(MachineType::AnyTagged()), closure,
-        jsgraph()->Int32Constant(JSFunction::kSharedFunctionInfoOffset -
-                                 kHeapObjectTag),
+        jsgraph()->Int32Constant(
+            wasm::ObjectAccess::SharedFunctionInfoOffsetInTaggedJSFunction()),
         Effect(), Control()));
     return SetEffect(graph()->NewNode(
         jsgraph()->machine()->Load(MachineType::AnyTagged()), shared,
@@ -4461,8 +4478,7 @@ class WasmWrapperGraphBuilder : public WasmGraphBuilder {
       // Load function index from {WasmExportedFunctionData}.
       Node* function_index =
           BuildLoadFunctionIndexFromExportedFunctionData(function_data);
-      BuildImportWasmCall(sig_, args, &rets, wasm::kNoCodePosition,
-                          function_index);
+      BuildImportCall(sig_, args, &rets, wasm::kNoCodePosition, function_index);
     } else {
       // Call to a wasm function defined in this module.
       // The call target is the jump table slot for that function.
@@ -4486,9 +4502,7 @@ class WasmWrapperGraphBuilder : public WasmGraphBuilder {
     Return(jsval);
   }
 
-  bool BuildWasmToJSWrapper(Handle<JSReceiver> target, int index) {
-    DCHECK(target->IsCallable());
-
+  bool BuildWasmImportCallWrapper(WasmImportCallKind kind, int func_index) {
     int wasm_count = static_cast<int>(sig_->parameter_count());
 
     // Build the start and the parameter nodes.
@@ -4497,16 +4511,13 @@ class WasmWrapperGraphBuilder : public WasmGraphBuilder {
     // Create the instance_node from the passed parameter.
     instance_node_.set(Param(wasm::kWasmInstanceParameterIndex));
 
-    Node* callables_node = LOAD_INSTANCE_FIELD(ImportedFunctionCallables,
-                                               MachineType::TaggedPointer());
-    Node* callable_node = LOAD_FIXED_ARRAY_SLOT(callables_node, index);
-    Node* undefined_node =
-        LOAD_INSTANCE_FIELD(UndefinedValue, MachineType::TaggedPointer());
     Node* native_context =
         LOAD_INSTANCE_FIELD(NativeContext, MachineType::TaggedPointer());
 
-    if (!wasm::IsJSCompatibleSignature(sig_)) {
-      // Throw a TypeError.
+    if (kind == WasmImportCallKind::kRuntimeTypeError) {
+      // =======================================================================
+      // === Runtime TypeError =================================================
+      // =======================================================================
       BuildCallToRuntimeWithContext(Runtime::kWasmThrowTypeError,
                                     native_context, nullptr, 0);
       // We don't need to return a value here, as the runtime call will not
@@ -4515,113 +4526,156 @@ class WasmWrapperGraphBuilder : public WasmGraphBuilder {
       return false;
     }
 
-    CallDescriptor* call_descriptor;
-    Node** args = Buffer(wasm_count + 9);
+    Node* callables_node = LOAD_INSTANCE_FIELD(ImportedFunctionCallables,
+                                               MachineType::TaggedPointer());
+    Node* callable_node = LOAD_FIXED_ARRAY_SLOT(callables_node, func_index);
+    Node* undefined_node =
+        LOAD_INSTANCE_FIELD(UndefinedValue, MachineType::TaggedPointer());
+
     Node* call = nullptr;
+    bool sloppy_receiver = true;
 
-    BuildModifyThreadInWasmFlag(false);
+    BuildModifyThreadInWasmFlag(false);  // exiting WASM via call.
 
-    if (target->IsJSFunction()) {
-      Handle<JSFunction> function = Handle<JSFunction>::cast(target);
-      Node* function_context = SetEffect(graph()->NewNode(
-          mcgraph()->machine()->Load(MachineType::TaggedPointer()),
-          callable_node,
-          mcgraph()->Int32Constant(
-              wasm::ObjectAccess::ContextOffsetInTaggedJSFunction()),
-          Effect(), Control()));
-
-      if (!IsClassConstructor(function->shared()->kind())) {
-        if (function->shared()->internal_formal_parameter_count() ==
-            wasm_count) {
-          int pos = 0;
-          args[pos++] = callable_node;  // target callable.
-          // Receiver.
-          if (is_sloppy(function->shared()->language_mode()) &&
-              !function->shared()->native()) {
-            Node* global_proxy = LOAD_FIXED_ARRAY_SLOT(
-                native_context, Context::GLOBAL_PROXY_INDEX);
-            args[pos++] = global_proxy;
-          } else {
-            args[pos++] = undefined_node;
-          }
-
-          call_descriptor = Linkage::GetJSCallDescriptor(
-              graph()->zone(), false, wasm_count + 1, CallDescriptor::kNoFlags);
-
-          // Convert wasm numbers to JS values.
-          pos = AddArgumentNodes(args, pos, wasm_count, sig_);
-
-          args[pos++] = undefined_node;                        // new target
-          args[pos++] = mcgraph()->Int32Constant(wasm_count);  // argument count
-          args[pos++] = function_context;
-          args[pos++] = Effect();
-          args[pos++] = Control();
-
-          call = graph()->NewNode(mcgraph()->common()->Call(call_descriptor),
-                                  pos, args);
-        } else if (function->shared()->internal_formal_parameter_count() >= 0) {
-          int pos = 0;
-          args[pos++] = BuildLoadBuiltinFromInstance(
-              Builtins::kArgumentsAdaptorTrampoline);
-          args[pos++] = callable_node;   // target callable
-          args[pos++] = undefined_node;  // new target
-          args[pos++] = mcgraph()->Int32Constant(wasm_count);  // argument count
-          args[pos++] = mcgraph()->Int32Constant(
-              function->shared()->internal_formal_parameter_count());
-          // Receiver.
-          if (is_sloppy(function->shared()->language_mode()) &&
-              !function->shared()->native()) {
-            Node* global_proxy = LOAD_FIXED_ARRAY_SLOT(
-                native_context, Context::GLOBAL_PROXY_INDEX);
-            args[pos++] = global_proxy;
-          } else {
-            args[pos++] = undefined_node;
-          }
-
-          call_descriptor = Linkage::GetStubCallDescriptor(
-              mcgraph()->zone(), ArgumentsAdaptorDescriptor{}, 1 + wasm_count,
-              CallDescriptor::kNoFlags, Operator::kNoProperties);
-
-          // Convert wasm numbers to JS values.
-          pos = AddArgumentNodes(args, pos, wasm_count, sig_);
-          args[pos++] = function_context;
-          args[pos++] = Effect();
-          args[pos++] = Control();
-          call = graph()->NewNode(mcgraph()->common()->Call(call_descriptor),
-                                  pos, args);
+    switch (kind) {
+      // =======================================================================
+      // === JS Functions with matching arity ==================================
+      // =======================================================================
+      case WasmImportCallKind::kJSFunctionArityMatch:
+        sloppy_receiver = false;
+        V8_FALLTHROUGH;  // fallthru
+      case WasmImportCallKind::kJSFunctionArityMatchSloppy: {
+        Node** args = Buffer(wasm_count + 9);
+        int pos = 0;
+        Node* function_context = SetEffect(graph()->NewNode(
+            mcgraph()->machine()->Load(MachineType::TaggedPointer()),
+            callable_node,
+            mcgraph()->Int32Constant(
+                wasm::ObjectAccess::ContextOffsetInTaggedJSFunction()),
+            Effect(), Control()));
+        args[pos++] = callable_node;  // target callable.
+        // Receiver.
+        if (sloppy_receiver) {
+          Node* global_proxy = LOAD_FIXED_ARRAY_SLOT(
+              native_context, Context::GLOBAL_PROXY_INDEX);
+          args[pos++] = global_proxy;
+        } else {
+          args[pos++] = undefined_node;
         }
+
+        auto call_descriptor = Linkage::GetJSCallDescriptor(
+            graph()->zone(), false, wasm_count + 1, CallDescriptor::kNoFlags);
+
+        // Convert wasm numbers to JS values.
+        pos = AddArgumentNodes(args, pos, wasm_count, sig_);
+
+        args[pos++] = undefined_node;                        // new target
+        args[pos++] = mcgraph()->Int32Constant(wasm_count);  // argument count
+        args[pos++] = function_context;
+        args[pos++] = Effect();
+        args[pos++] = Control();
+
+        call = graph()->NewNode(mcgraph()->common()->Call(call_descriptor), pos,
+                                args);
+        break;
       }
+      // =======================================================================
+      // === JS Functions with arguments adapter ===============================
+      // =======================================================================
+      case WasmImportCallKind::kJSFunctionArityMismatch:
+        sloppy_receiver = false;
+        V8_FALLTHROUGH;  // fallthru
+      case WasmImportCallKind::kJSFunctionArityMismatchSloppy: {
+        Node** args = Buffer(wasm_count + 9);
+        int pos = 0;
+        Node* function_context = SetEffect(graph()->NewNode(
+            mcgraph()->machine()->Load(MachineType::TaggedPointer()),
+            callable_node,
+            mcgraph()->Int32Constant(
+                wasm::ObjectAccess::ContextOffsetInTaggedJSFunction()),
+            Effect(), Control()));
+        args[pos++] =
+            BuildLoadBuiltinFromInstance(Builtins::kArgumentsAdaptorTrampoline);
+        args[pos++] = callable_node;                         // target callable
+        args[pos++] = undefined_node;                        // new target
+        args[pos++] = mcgraph()->Int32Constant(wasm_count);  // argument count
+
+        // Load shared function info, and then the formal parameter count.
+        Node* shared_function_info = SetEffect(graph()->NewNode(
+            mcgraph()->machine()->Load(MachineType::TaggedPointer()),
+            callable_node,
+            mcgraph()->Int32Constant(
+                wasm::ObjectAccess::
+                    SharedFunctionInfoOffsetInTaggedJSFunction()),
+            Effect(), Control()));
+        Node* formal_param_count = SetEffect(graph()->NewNode(
+            mcgraph()->machine()->Load(MachineType::Uint16()),
+            shared_function_info,
+            mcgraph()->Int32Constant(
+                wasm::ObjectAccess::
+                    FormalParameterCountOffsetInSharedFunctionInfo()),
+            Effect(), Control()));
+        args[pos++] = formal_param_count;
+
+        // Receiver.
+        if (sloppy_receiver) {
+          Node* global_proxy = LOAD_FIXED_ARRAY_SLOT(
+              native_context, Context::GLOBAL_PROXY_INDEX);
+          args[pos++] = global_proxy;
+        } else {
+          args[pos++] = undefined_node;
+        }
+
+        auto call_descriptor = Linkage::GetStubCallDescriptor(
+            mcgraph()->zone(), ArgumentsAdaptorDescriptor{}, 1 + wasm_count,
+            CallDescriptor::kNoFlags, Operator::kNoProperties);
+
+        // Convert wasm numbers to JS values.
+        pos = AddArgumentNodes(args, pos, wasm_count, sig_);
+        args[pos++] = function_context;
+        args[pos++] = Effect();
+        args[pos++] = Control();
+        call = graph()->NewNode(mcgraph()->common()->Call(call_descriptor), pos,
+                                args);
+        break;
+      }
+      // =======================================================================
+      // === General case of unknown callable ==================================
+      // =======================================================================
+      case WasmImportCallKind::kUseCallBuiltin: {
+        Node** args = Buffer(wasm_count + 9);
+        int pos = 0;
+        args[pos++] = mcgraph()->RelocatableIntPtrConstant(
+            wasm::WasmCode::kWasmCallJavaScript, RelocInfo::WASM_STUB_CALL);
+        args[pos++] = callable_node;
+        args[pos++] = mcgraph()->Int32Constant(wasm_count);  // argument count
+        args[pos++] = undefined_node;                        // receiver
+
+        auto call_descriptor = Linkage::GetStubCallDescriptor(
+            graph()->zone(), CallTrampolineDescriptor{}, wasm_count + 1,
+            CallDescriptor::kNoFlags, Operator::kNoProperties,
+            StubCallMode::kCallWasmRuntimeStub);
+
+        // Convert wasm numbers to JS values.
+        pos = AddArgumentNodes(args, pos, wasm_count, sig_);
+
+        // The native_context is sufficient here, because all kind of callables
+        // which depend on the context provide their own context. The context
+        // here is only needed if the target is a constructor to throw a
+        // TypeError, if the target is a native function, or if the target is a
+        // callable JSObject, which can only be constructed by the runtime.
+        args[pos++] = native_context;
+        args[pos++] = Effect();
+        args[pos++] = Control();
+
+        call = graph()->NewNode(mcgraph()->common()->Call(call_descriptor), pos,
+                                args);
+        break;
+      }
+      default:
+        UNREACHABLE();
     }
-
-    // We cannot call the target directly, we have to use the Call builtin.
-    if (!call) {
-      int pos = 0;
-      args[pos++] = mcgraph()->RelocatableIntPtrConstant(
-          wasm::WasmCode::kWasmCallJavaScript, RelocInfo::WASM_STUB_CALL);
-      args[pos++] = callable_node;
-      args[pos++] = mcgraph()->Int32Constant(wasm_count);  // argument count
-      args[pos++] = undefined_node;                        // receiver
-
-      call_descriptor = Linkage::GetStubCallDescriptor(
-          graph()->zone(), CallTrampolineDescriptor{}, wasm_count + 1,
-          CallDescriptor::kNoFlags, Operator::kNoProperties,
-          StubCallMode::kCallWasmRuntimeStub);
-
-      // Convert wasm numbers to JS values.
-      pos = AddArgumentNodes(args, pos, wasm_count, sig_);
-
-      // The native_context is sufficient here, because all kind of callables
-      // which depend on the context provide their own context. The context here
-      // is only needed if the target is a constructor to throw a TypeError, if
-      // the target is a native function, or if the target is a callable
-      // JSObject, which can only be constructed by the runtime.
-      args[pos++] = native_context;
-      args[pos++] = Effect();
-      args[pos++] = Control();
-
-      call = graph()->NewNode(mcgraph()->common()->Call(call_descriptor), pos,
-                              args);
-    }
+    DCHECK_NOT_NULL(call);
 
     SetEffect(call);
     SetSourcePosition(call, 0);
@@ -4631,7 +4685,7 @@ class WasmWrapperGraphBuilder : public WasmGraphBuilder {
                     ? mcgraph()->Int32Constant(0)
                     : FromJS(call, native_context, sig_->GetReturn());
 
-    BuildModifyThreadInWasmFlag(true);
+    BuildModifyThreadInWasmFlag(true);  // reentering WASM upon return.
 
     Return(val);
     return true;
@@ -4794,13 +4848,11 @@ void AppendSignature(char* buffer, size_t max_name_len,
 
 }  // namespace
 
-MaybeHandle<Code> CompileJSToWasmWrapper(
-    Isolate* isolate, const wasm::NativeModule* native_module,
-    wasm::FunctionSig* sig, bool is_import) {
+MaybeHandle<Code> CompileJSToWasmWrapper(Isolate* isolate,
+                                         wasm::FunctionSig* sig,
+                                         bool is_import) {
   TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.wasm"),
                "CompileJSToWasmWrapper");
-  const wasm::WasmModule* module = native_module->module();
-
   //----------------------------------------------------------------------------
   // Create the Graph.
   //----------------------------------------------------------------------------
@@ -4816,7 +4868,7 @@ MaybeHandle<Code> CompileJSToWasmWrapper(
   Node* control = nullptr;
   Node* effect = nullptr;
 
-  wasm::ModuleEnv env(module, wasm::kNoTrapHandler,
+  wasm::ModuleEnv env(nullptr, wasm::kNoTrapHandler,
                       wasm::kRuntimeExceptionSupport);
   WasmWrapperGraphBuilder builder(&zone, &env, &jsgraph, sig, nullptr,
                                   StubCallMode::kCallOnHeapBuiltin);
@@ -4859,12 +4911,55 @@ MaybeHandle<Code> CompileJSToWasmWrapper(
   return code;
 }
 
-MaybeHandle<Code> CompileWasmToJSWrapper(
-    Isolate* isolate, Handle<JSReceiver> target, wasm::FunctionSig* sig,
+WasmImportCallKind GetWasmImportCallKind(Handle<JSReceiver> target,
+                                         wasm::FunctionSig* expected_sig) {
+  if (WasmExportedFunction::IsWasmExportedFunction(*target)) {
+    auto imported_function = WasmExportedFunction::cast(*target);
+    wasm::FunctionSig* imported_sig =
+        imported_function->instance()
+            ->module()
+            ->functions[imported_function->function_index()]
+            .sig;
+    if (*imported_sig != *expected_sig) {
+      return WasmImportCallKind::kLinkError;
+    }
+    return WasmImportCallKind::kWasmToWasm;
+  }
+  // Assuming we are calling to JS, check whether this would be a runtime error.
+  if (!wasm::IsJSCompatibleSignature(expected_sig)) {
+    return WasmImportCallKind::kRuntimeTypeError;
+  }
+  // For JavaScript calls, determine whether the target has an arity match
+  // and whether it has a sloppy receiver.
+  if (target->IsJSFunction()) {
+    Handle<JSFunction> function = Handle<JSFunction>::cast(target);
+    if (IsClassConstructor(function->shared()->kind())) {
+      // Class constructor will throw anyway.
+      return WasmImportCallKind::kUseCallBuiltin;
+    }
+    bool sloppy = is_sloppy(function->shared()->language_mode()) &&
+                  !function->shared()->native();
+    if (function->shared()->internal_formal_parameter_count() ==
+        expected_sig->parameter_count()) {
+      return sloppy ? WasmImportCallKind::kJSFunctionArityMatchSloppy
+                    : WasmImportCallKind::kJSFunctionArityMatch;
+    }
+    return sloppy ? WasmImportCallKind::kJSFunctionArityMismatchSloppy
+                  : WasmImportCallKind::kJSFunctionArityMismatch;
+  }
+  // Unknown case. Use the call builtin.
+  return WasmImportCallKind::kUseCallBuiltin;
+}
+
+MaybeHandle<Code> CompileWasmImportCallWrapper(
+    Isolate* isolate, WasmImportCallKind kind, wasm::FunctionSig* sig,
     uint32_t index, wasm::ModuleOrigin origin,
     wasm::UseTrapHandler use_trap_handler) {
+  DCHECK_NE(WasmImportCallKind::kLinkError, kind);
+  DCHECK_NE(WasmImportCallKind::kWasmToWasm, kind);
+
   TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.wasm"),
-               "CompileWasmToJSWrapper");
+               "CompileWasmImportCallWrapper");
   //----------------------------------------------------------------------------
   // Create the Graph
   //----------------------------------------------------------------------------
@@ -4892,7 +4987,7 @@ MaybeHandle<Code> CompileWasmToJSWrapper(
                                   StubCallMode::kCallWasmRuntimeStub);
   builder.set_control_ptr(&control);
   builder.set_effect_ptr(&effect);
-  builder.BuildWasmToJSWrapper(target, index);
+  builder.BuildWasmImportCallWrapper(kind, index);
 
   EmbeddedVector<char, 32> func_name;
   func_name.Truncate(SNPrintF(func_name, "wasm-to-js#%d", index));

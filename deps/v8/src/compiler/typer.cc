@@ -19,6 +19,7 @@
 #include "src/compiler/simplified-operator.h"
 #include "src/compiler/type-cache.h"
 #include "src/objects-inl.h"
+#include "src/objects/builtin-function-id.h"
 
 namespace v8 {
 namespace internal {
@@ -33,14 +34,13 @@ class Typer::Decorator final : public GraphDecorator {
   Typer* const typer_;
 };
 
-Typer::Typer(Isolate* isolate, JSHeapBroker* js_heap_broker, Flags flags,
-             Graph* graph)
+Typer::Typer(JSHeapBroker* js_heap_broker, Flags flags, Graph* graph)
     : flags_(flags),
       graph_(graph),
       decorator_(nullptr),
       cache_(TypeCache::Get()),
       js_heap_broker_(js_heap_broker),
-      operation_typer_(isolate, js_heap_broker, zone()) {
+      operation_typer_(js_heap_broker, zone()) {
   singleton_false_ = operation_typer_.singleton_false();
   singleton_true_ = operation_typer_.singleton_true();
 
@@ -1419,7 +1419,6 @@ Type Typer::Visitor::JSCallTyper(Type fun, Typer* t) {
     return Type::NonInternal();
   }
   JSFunctionRef function = fun.AsHeapConstant()->Ref().AsJSFunction();
-  function.Serialize();
   if (!function.shared().HasBuiltinFunctionId()) {
     return Type::NonInternal();
   }
@@ -1724,8 +1723,6 @@ Type Typer::Visitor::TypeJSCallRuntime(Node* node) {
       return Type::Boolean();
     case Runtime::kInlineCreateIterResultObject:
       return Type::OtherObject();
-    case Runtime::kInlineStringCharFromCode:
-      return Type::String();
     case Runtime::kInlineToLength:
       return TypeUnaryOp(node, ToLength);
     case Runtime::kInlineToNumber:

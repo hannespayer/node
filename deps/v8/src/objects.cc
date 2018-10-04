@@ -86,6 +86,7 @@
 #include "src/objects/microtask-queue-inl.h"
 #include "src/objects/module-inl.h"
 #include "src/objects/promise-inl.h"
+#include "src/objects/stack-frame-info-inl.h"
 #include "src/parsing/preparsed-scope-data.h"
 #include "src/property-descriptor.h"
 #include "src/prototype.h"
@@ -3092,6 +3093,7 @@ VisitorId Map::GetVisitorId(Map* map) {
     case STRING_TABLE_TYPE:
     case SCOPE_INFO_TYPE:
     case SCRIPT_CONTEXT_TABLE_TYPE:
+    case AWAIT_CONTEXT_TYPE:
     case BLOCK_CONTEXT_TYPE:
     case CATCH_CONTEXT_TYPE:
     case DEBUG_EVALUATE_CONTEXT_TYPE:
@@ -3263,7 +3265,7 @@ VisitorId Map::GetVisitorId(Map* map) {
     case ALLOCATION_SITE_TYPE:
       return kVisitAllocationSite;
 
-#define MAKE_STRUCT_CASE(NAME, Name, name) case NAME##_TYPE:
+#define MAKE_STRUCT_CASE(TYPE, Name, name) case TYPE:
       STRUCT_LIST(MAKE_STRUCT_CASE)
 #undef MAKE_STRUCT_CASE
       if (instance_type == PROTOTYPE_INFO_TYPE) {
@@ -3401,6 +3403,15 @@ void HeapObject::HeapObjectShortPrint(std::ostream& os) {  // NOLINT
       }
       os << ">";
     } break;
+    case AWAIT_CONTEXT_TYPE: {
+      os << "<AwaitContext generator= ";
+      HeapStringAllocator allocator;
+      StringStream accumulator(&allocator);
+      Context::cast(this)->extension()->ShortPrint(&accumulator);
+      os << accumulator.ToCString().get();
+      os << '>';
+      break;
+    }
     case BLOCK_CONTEXT_TYPE:
       os << "<BlockContext[" << FixedArray::cast(this)->length() << "]>";
       break;
@@ -3553,8 +3564,8 @@ void HeapObject::HeapObjectShortPrint(std::ostream& os) {  // NOLINT
     case JS_MESSAGE_OBJECT_TYPE:
       os << "<JSMessageObject>";
       break;
-#define MAKE_STRUCT_CASE(NAME, Name, name)   \
-  case NAME##_TYPE:                          \
+#define MAKE_STRUCT_CASE(TYPE, Name, name)   \
+  case TYPE:                                 \
     os << "<" #Name;                         \
     Name::cast(this)->BriefPrintDetails(os); \
     os << ">";                               \
@@ -13037,7 +13048,7 @@ bool CanSubclassHaveInobjectProperties(InstanceType instance_type) {
   case FIXED_##TYPE##_ARRAY_TYPE:
 #undef TYPED_ARRAY_CASE
 
-#define MAKE_STRUCT_CASE(NAME, Name, name) case NAME##_TYPE:
+#define MAKE_STRUCT_CASE(TYPE, Name, name) case TYPE:
       STRUCT_LIST(MAKE_STRUCT_CASE)
 #undef MAKE_STRUCT_CASE
       // We must not end up here for these instance types at all.
@@ -13327,64 +13338,16 @@ Handle<String> JSFunction::ToString(Handle<JSFunction> function) {
     return NativeCodeFunctionSourceString(shared_info);
   }
 
-  if (FLAG_harmony_function_tostring) {
-    if (shared_info->function_token_position() == kNoSourcePosition) {
-      // If the function token position isn't valid, return [native code] to
-      // ensure calling eval on the returned source code throws rather than
-      // giving inconsistent call behaviour.
-      isolate->CountUsage(v8::Isolate::UseCounterFeature::
-                              kFunctionTokenOffsetTooLongForToString);
-      return NativeCodeFunctionSourceString(shared_info);
-    }
-    return Handle<String>::cast(
-        SharedFunctionInfo::GetSourceCodeHarmony(shared_info));
+  if (shared_info->function_token_position() == kNoSourcePosition) {
+    // If the function token position isn't valid, return [native code] to
+    // ensure calling eval on the returned source code throws rather than
+    // giving inconsistent call behaviour.
+    isolate->CountUsage(
+        v8::Isolate::UseCounterFeature::kFunctionTokenOffsetTooLongForToString);
+    return NativeCodeFunctionSourceString(shared_info);
   }
-
-  IncrementalStringBuilder builder(isolate);
-  FunctionKind kind = shared_info->kind();
-  if (!IsArrowFunction(kind)) {
-    if (IsConciseMethod(kind)) {
-      if (IsAsyncGeneratorFunction(kind)) {
-        builder.AppendCString("async *");
-      } else if (IsGeneratorFunction(kind)) {
-        builder.AppendCharacter('*');
-      } else if (IsAsyncFunction(kind)) {
-        builder.AppendCString("async ");
-      }
-    } else {
-      if (IsAsyncGeneratorFunction(kind)) {
-        builder.AppendCString("async function* ");
-      } else if (IsGeneratorFunction(kind)) {
-        builder.AppendCString("function* ");
-      } else if (IsAsyncFunction(kind)) {
-        builder.AppendCString("async function ");
-      } else {
-        builder.AppendCString("function ");
-      }
-    }
-    if (shared_info->name_should_print_as_anonymous()) {
-      builder.AppendCString("anonymous");
-    } else if (!shared_info->is_anonymous_expression()) {
-      builder.AppendString(handle(shared_info->Name(), isolate));
-    }
-  }
-  if (shared_info->is_wrapped()) {
-    builder.AppendCharacter('(');
-    Handle<FixedArray> args(
-        Script::cast(shared_info->script())->wrapped_arguments(), isolate);
-    int argc = args->length();
-    for (int i = 0; i < argc; i++) {
-      if (i > 0) builder.AppendCString(", ");
-      builder.AppendString(Handle<String>(String::cast(args->get(i)), isolate));
-    }
-    builder.AppendCString(") {\n");
-  }
-  builder.AppendString(
-      Handle<String>::cast(SharedFunctionInfo::GetSourceCode(shared_info)));
-  if (shared_info->is_wrapped()) {
-    builder.AppendCString("\n}");
-  }
-  return builder.Finish().ToHandleChecked();
+  return Handle<String>::cast(
+      SharedFunctionInfo::GetSourceCodeHarmony(shared_info));
 }
 
 void Oddball::Initialize(Isolate* isolate, Handle<Oddball> oddball,
@@ -16027,9 +15990,9 @@ bool JSObject::IsDroppableApiWrapper() {
 
 const char* Symbol::PrivateSymbolToName() const {
   ReadOnlyRoots roots = GetReadOnlyRoots();
-#define SYMBOL_CHECK_AND_PRINT(name) \
+#define SYMBOL_CHECK_AND_PRINT(_, name) \
   if (this == roots.name()) return #name;
-  PRIVATE_SYMBOL_LIST(SYMBOL_CHECK_AND_PRINT)
+  PRIVATE_SYMBOL_LIST_GENERATOR(SYMBOL_CHECK_AND_PRINT, /* not used */)
 #undef SYMBOL_CHECK_AND_PRINT
   return "UNKNOWN";
 }
@@ -16640,7 +16603,7 @@ Handle<Derived> HashTable<Derived, Shape>::NewInternal(
     Isolate* isolate, int capacity, PretenureFlag pretenure) {
   Factory* factory = isolate->factory();
   int length = EntryToIndex(capacity);
-  RootIndex map_root_index = static_cast<RootIndex>(Shape::GetMapRootIndex());
+  RootIndex map_root_index = Shape::GetMapRootIndex();
   Handle<FixedArray> array =
       factory->NewFixedArrayWithMap(map_root_index, length, pretenure);
   Handle<Derived> table = Handle<Derived>::cast(array);

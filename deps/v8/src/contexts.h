@@ -10,6 +10,8 @@
 namespace v8 {
 namespace internal {
 
+class JSGlobalObject;
+class JSGlobalProxy;
 class NativeContext;
 class RegExpMatchInfo;
 
@@ -192,6 +194,9 @@ enum ContextLookupFlags {
   V(INITIAL_MAP_PROTOTYPE_MAP_INDEX, Map, initial_map_prototype_map)           \
   V(INITIAL_OBJECT_PROTOTYPE_INDEX, JSObject, initial_object_prototype)        \
   V(INITIAL_SET_PROTOTYPE_MAP_INDEX, Map, initial_set_prototype_map)           \
+  V(INITIAL_STRING_ITERATOR_MAP_INDEX, Map, initial_string_iterator_map)       \
+  V(INITIAL_STRING_ITERATOR_PROTOTYPE_INDEX, JSObject,                         \
+    initial_string_iterator_prototype)                                         \
   V(INITIAL_STRING_PROTOTYPE_INDEX, JSObject, initial_string_prototype)        \
   V(INITIAL_WEAKMAP_PROTOTYPE_MAP_INDEX, Map, initial_weakmap_prototype_map)   \
   V(INITIAL_WEAKSET_PROTOTYPE_MAP_INDEX, Map, initial_weakset_prototype_map)   \
@@ -231,7 +236,8 @@ enum ContextLookupFlags {
   V(MAP_KEY_VALUE_ITERATOR_MAP_INDEX, Map, map_key_value_iterator_map)         \
   V(MAP_VALUE_ITERATOR_MAP_INDEX, Map, map_value_iterator_map)                 \
   V(MATH_RANDOM_INDEX_INDEX, Smi, math_random_index)                           \
-  V(MATH_RANDOM_CACHE_INDEX, Object, math_random_cache)                        \
+  V(MATH_RANDOM_STATE_INDEX, ByteArray, math_random_state)                     \
+  V(MATH_RANDOM_CACHE_INDEX, FixedDoubleArray, math_random_cache)              \
   V(MESSAGE_LISTENERS_INDEX, TemplateList, message_listeners)                  \
   V(NATIVES_UTILS_OBJECT_INDEX, Object, natives_utils_object)                  \
   V(NORMALIZED_MAP_CACHE_INDEX, Object, normalized_map_cache)                  \
@@ -327,7 +333,6 @@ enum ContextLookupFlags {
   V(CLASS_FUNCTION_MAP_INDEX, Map, class_function_map)                         \
   V(STRING_FUNCTION_INDEX, JSFunction, string_function)                        \
   V(STRING_FUNCTION_PROTOTYPE_MAP_INDEX, Map, string_function_prototype_map)   \
-  V(STRING_ITERATOR_MAP_INDEX, Map, string_iterator_map)                       \
   V(SYMBOL_FUNCTION_INDEX, JSFunction, symbol_function)                        \
   V(NATIVE_FUNCTION_MAP_INDEX, Map, native_function_map)                       \
   V(WASM_EXCEPTION_CONSTRUCTOR_INDEX, JSFunction, wasm_exception_constructor)  \
@@ -448,7 +453,8 @@ class Context : public FixedArray, public NeverReadOnlySpaceObject {
     // The extension slot is used for either the global object (in native
     // contexts), eval extension object (function contexts), subject of with
     // (with contexts), or the variable name (catch contexts), the serialized
-    // scope info (block contexts), or the module instance (module contexts).
+    // scope info (block contexts), the module instance (module contexts), or
+    // the generator object (await contexts).
     EXTENSION_INDEX,
     NATIVE_CONTEXT_INDEX,
 
@@ -535,6 +541,7 @@ class Context : public FixedArray, public NeverReadOnlySpaceObject {
   inline bool IsCatchContext() const;
   inline bool IsWithContext() const;
   inline bool IsDebugEvaluateContext() const;
+  inline bool IsAwaitContext() const;
   inline bool IsBlockContext() const;
   inline bool IsModuleContext() const;
   inline bool IsEvalContext() const;

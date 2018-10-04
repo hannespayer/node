@@ -1380,12 +1380,11 @@ class V8_EXPORT ScriptCompiler {
     virtual void ResetToBookmark();
   };
 
-
   /**
    * Source code which can be streamed into V8 in pieces. It will be parsed
-   * while streaming. It can be compiled after the streaming is complete.
-   * StreamedSource must be kept alive while the streaming task is ran (see
-   * ScriptStreamingTask below).
+   * while streaming and compiled after parsing has completed. StreamedSource
+   * must be kept alive while the streaming task is run (see ScriptStreamingTask
+   * below).
    */
   class V8_EXPORT StreamedSource {
    public:
@@ -1394,29 +1393,35 @@ class V8_EXPORT ScriptCompiler {
     StreamedSource(ExternalSourceStream* source_stream, Encoding encoding);
     ~StreamedSource();
 
-    // Ownership of the CachedData or its buffers is *not* transferred to the
-    // caller. The CachedData object is alive as long as the StreamedSource
-    // object is alive.
-    const CachedData* GetCachedData() const;
+    V8_DEPRECATED("No longer used", const CachedData* GetCachedData() const) {
+      return nullptr;
+    }
 
-    internal::ScriptStreamingData* impl() const { return impl_; }
+    internal::ScriptStreamingData* impl() const { return impl_.get(); }
 
     // Prevent copying.
     StreamedSource(const StreamedSource&) = delete;
     StreamedSource& operator=(const StreamedSource&) = delete;
 
    private:
-    internal::ScriptStreamingData* impl_;
+    std::unique_ptr<internal::ScriptStreamingData> impl_;
   };
 
   /**
    * A streaming task which the embedder must run on a background thread to
    * stream scripts into V8. Returned by ScriptCompiler::StartStreamingScript.
    */
-  class ScriptStreamingTask {
+  class V8_EXPORT ScriptStreamingTask final {
    public:
-    virtual ~ScriptStreamingTask() = default;
-    virtual void Run() = 0;
+    void Run();
+
+   private:
+    friend class ScriptCompiler;
+
+    explicit ScriptStreamingTask(internal::ScriptStreamingData* data)
+        : data_(data) {}
+
+    internal::ScriptStreamingData* data_;
   };
 
   enum CompileOptions {
@@ -2389,8 +2394,9 @@ class V8_EXPORT Value : public Data {
 
   V8_WARN_UNUSED_RESULT MaybeLocal<BigInt> ToBigInt(
       Local<Context> context) const;
-  V8_WARN_UNUSED_RESULT MaybeLocal<Boolean> ToBoolean(
-      Local<Context> context) const;
+  V8_DEPRECATE_SOON("ToBoolean can never throw. Use Local version.",
+                    V8_WARN_UNUSED_RESULT MaybeLocal<Boolean> ToBoolean(
+                        Local<Context> context) const);
   V8_WARN_UNUSED_RESULT MaybeLocal<Number> ToNumber(
       Local<Context> context) const;
   V8_WARN_UNUSED_RESULT MaybeLocal<String> ToString(
@@ -2405,8 +2411,7 @@ class V8_EXPORT Value : public Data {
       Local<Context> context) const;
   V8_WARN_UNUSED_RESULT MaybeLocal<Int32> ToInt32(Local<Context> context) const;
 
-  V8_DEPRECATE_SOON("Use maybe version",
-                    Local<Boolean> ToBoolean(Isolate* isolate) const);
+  Local<Boolean> ToBoolean(Isolate* isolate) const;
   V8_DEPRECATE_SOON("Use maybe version",
                     Local<Number> ToNumber(Isolate* isolate) const);
   V8_DEPRECATE_SOON("Use maybe version",
@@ -2425,7 +2430,11 @@ class V8_EXPORT Value : public Data {
   V8_WARN_UNUSED_RESULT MaybeLocal<Uint32> ToArrayIndex(
       Local<Context> context) const;
 
-  V8_WARN_UNUSED_RESULT Maybe<bool> BooleanValue(Local<Context> context) const;
+  bool BooleanValue(Isolate* isolate) const;
+
+  V8_DEPRECATE_SOON("BooleanValue can never throw. Use Isolate version.",
+                    V8_WARN_UNUSED_RESULT Maybe<bool> BooleanValue(
+                        Local<Context> context) const);
   V8_WARN_UNUSED_RESULT Maybe<double> NumberValue(Local<Context> context) const;
   V8_WARN_UNUSED_RESULT Maybe<int64_t> IntegerValue(
       Local<Context> context) const;
@@ -7357,6 +7366,21 @@ class V8_EXPORT Isolate {
     kWasmThreadOpcodes = 51,
     kAtomicsNotify = 52,
     kAtomicsWake = 53,
+    kCollator = 54,
+    kNumberFormat = 55,
+    kDateTimeFormat = 56,
+    kPluralRules = 57,
+    kRelativeTimeFormat = 58,
+    kLocale = 59,
+    kListFormat = 60,
+    kSegmenter = 61,
+    kStringLocaleCompare = 62,
+    kStringToLocaleUpperCase = 63,
+    kStringToLocaleLowerCase = 64,
+    kNumberToLocaleString = 65,
+    kDateToLocaleString = 66,
+    kDateToLocaleDateString = 67,
+    kDateToLocaleTimeString = 68,
 
     // If you add new values here, you'll also need to update Chromium's:
     // web_feature.mojom, UseCounterCallback.cpp, and enums.xml. V8 changes to
@@ -8092,7 +8116,7 @@ class V8_EXPORT Isolate {
   /**
    * Returns a memory range that can potentially contain jitted code. Code for
    * V8's 'builtins' will not be in this range if embedded builtins is enabled.
-   * Instead, see GetBuiltinsCodeRange.
+   * Instead, see GetEmbeddedCodeRange.
    *
    * On Win64, embedders are advised to install function table callbacks for
    * these ranges, as default SEH won't be able to unwind through jitted code.
@@ -8107,13 +8131,13 @@ class V8_EXPORT Isolate {
   void GetCodeRange(void** start, size_t* length_in_bytes);
 
   /**
-   * Returns a memory range containing the code for V8's builtin functions
-   * which are shared across isolates.
+   * Returns a memory range containing the code for V8's embedded functions
+   * (e.g. builtins) which are shared across isolates.
    *
    * If embedded builtins are disabled, then the memory range will be a null
    * pointer with 0 length.
    */
-  MemoryRange GetBuiltinsCodeRange();
+  MemoryRange GetEmbeddedCodeRange();
 
   /** Set the callback to invoke in case of fatal errors. */
   void SetFatalErrorHandler(FatalErrorCallback that);

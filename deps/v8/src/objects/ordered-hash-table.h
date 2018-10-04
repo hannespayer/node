@@ -7,6 +7,7 @@
 
 #include "src/globals.h"
 #include "src/objects/fixed-array.h"
+#include "src/objects/js-objects.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -231,7 +232,7 @@ class OrderedHashSet : public OrderedHashTable<OrderedHashSet, 1> {
                                                Handle<OrderedHashSet> table,
                                                GetKeysConversion convert);
   static HeapObject* GetEmpty(ReadOnlyRoots ro_roots);
-  static inline int GetMapRootIndex();
+  static inline RootIndex GetMapRootIndex();
   static inline bool Is(Handle<HeapObject> table);
 };
 
@@ -249,7 +250,7 @@ class OrderedHashMap : public OrderedHashTable<OrderedHashMap, 2> {
   static Object* GetHash(Isolate* isolate, Object* key);
 
   static HeapObject* GetEmpty(ReadOnlyRoots ro_roots);
-  static inline int GetMapRootIndex();
+  static inline RootIndex GetMapRootIndex();
   static inline bool Is(Handle<HeapObject> table);
 
   static const int kValueOffset = 1;
@@ -551,7 +552,7 @@ class SmallOrderedHashSet : public SmallOrderedHashTable<SmallOrderedHashSet> {
                                               Handle<SmallOrderedHashSet> table,
                                               Handle<Object> key);
   static inline bool Is(Handle<HeapObject> table);
-  static inline int GetMapRootIndex();
+  static inline RootIndex GetMapRootIndex();
 };
 
 class SmallOrderedHashMap : public SmallOrderedHashTable<SmallOrderedHashMap> {
@@ -572,7 +573,7 @@ class SmallOrderedHashMap : public SmallOrderedHashTable<SmallOrderedHashMap> {
                                               Handle<Object> key,
                                               Handle<Object> value);
   static inline bool Is(Handle<HeapObject> table);
-  static inline int GetMapRootIndex();
+  static inline RootIndex GetMapRootIndex();
 };
 
 // TODO(gsathya): Rename this to OrderedHashTable, after we rename

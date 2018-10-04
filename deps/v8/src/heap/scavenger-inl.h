@@ -7,12 +7,88 @@
 
 #include "src/heap/scavenger.h"
 
+#include "src/heap/incremental-marking-inl.h"
 #include "src/heap/local-allocator-inl.h"
 #include "src/objects-inl.h"
 #include "src/objects/map.h"
 
 namespace v8 {
 namespace internal {
+
+void Scavenger::PromotionList::View::PushRegularObject(HeapObject* object,
+                                                       int size) {
+  promotion_list_->PushRegularObject(task_id_, object, size);
+}
+
+void Scavenger::PromotionList::View::PushLargeObject(HeapObject* object,
+                                                     Map* map, int size) {
+  promotion_list_->PushLargeObject(task_id_, object, map, size);
+}
+
+bool Scavenger::PromotionList::View::IsEmpty() {
+  return promotion_list_->IsEmpty();
+}
+
+size_t Scavenger::PromotionList::View::LocalPushSegmentSize() {
+  return promotion_list_->LocalPushSegmentSize(task_id_);
+}
+
+bool Scavenger::PromotionList::View::Pop(struct PromotionListEntry* entry) {
+  return promotion_list_->Pop(task_id_, entry);
+}
+
+bool Scavenger::PromotionList::View::IsGlobalPoolEmpty() {
+  return promotion_list_->IsGlobalPoolEmpty();
+}
+
+bool Scavenger::PromotionList::View::ShouldEagerlyProcessPromotionList() {
+  return promotion_list_->ShouldEagerlyProcessPromotionList(task_id_);
+}
+
+void Scavenger::PromotionList::PushRegularObject(int task_id,
+                                                 HeapObject* object, int size) {
+  regular_object_promotion_list_.Push(task_id, ObjectAndSize(object, size));
+}
+
+void Scavenger::PromotionList::PushLargeObject(int task_id, HeapObject* object,
+                                               Map* map, int size) {
+  large_object_promotion_list_.Push(task_id, {object, map, size});
+}
+
+bool Scavenger::PromotionList::IsEmpty() {
+  return regular_object_promotion_list_.IsEmpty() &&
+         large_object_promotion_list_.IsEmpty();
+}
+
+size_t Scavenger::PromotionList::LocalPushSegmentSize(int task_id) {
+  return regular_object_promotion_list_.LocalPushSegmentSize(task_id) +
+         large_object_promotion_list_.LocalPushSegmentSize(task_id);
+}
+
+bool Scavenger::PromotionList::Pop(int task_id,
+                                   struct PromotionListEntry* entry) {
+  ObjectAndSize regular_object;
+  if (regular_object_promotion_list_.Pop(task_id, &regular_object)) {
+    entry->heap_object = regular_object.first;
+    entry->size = regular_object.second;
+    entry->map = entry->heap_object->map();
+    return true;
+  }
+  return large_object_promotion_list_.Pop(task_id, entry);
+}
+
+bool Scavenger::PromotionList::IsGlobalPoolEmpty() {
+  return regular_object_promotion_list_.IsGlobalPoolEmpty() &&
+         large_object_promotion_list_.IsGlobalPoolEmpty();
+}
+
+bool Scavenger::PromotionList::ShouldEagerlyProcessPromotionList(int task_id) {
+  // Threshold when to prioritize processing of the promotion list. Right
+  // now we only look into the regular object list.
+  const int kProcessPromotionListThreshold =
+      kRegularObjectPromotionListSegmentSize / 2;
+  return LocalPushSegmentSize(task_id) < kProcessPromotionListThreshold;
+}
 
 // White list for objects that for sure only contain data.
 bool Scavenger::ContainsOnlyData(VisitorId visitor_id) {
@@ -127,7 +203,7 @@ CopyAndForwardResult Scavenger::PromoteObject(Map* map,
     }
     HeapObjectReference::Update(slot, target);
     if (!ContainsOnlyData(map->visitor_id())) {
-      promotion_list_.Push(ObjectAndSize(target, object_size));
+      promotion_list_.PushRegularObject(target, object_size);
     }
     promoted_size_ += object_size;
     return CopyAndForwardResult::SUCCESS_OLD_GENERATION;
@@ -142,6 +218,26 @@ SlotCallbackResult Scavenger::RememberedSetEntryNeeded(
                                                                   : REMOVE_SLOT;
 }
 
+bool Scavenger::HandleLargeObject(Map* map, HeapObject* object,
+                                  int object_size) {
+  if (V8_UNLIKELY(FLAG_young_generation_large_objects &&
+                  object_size > kMaxNewSpaceHeapObjectSize)) {
+    DCHECK_EQ(NEW_LO_SPACE,
+              MemoryChunk::FromHeapObject(object)->owner()->identity());
+    if (base::AsAtomicPointer::Release_CompareAndSwap(
+            reinterpret_cast<HeapObject**>(object->address()), map,
+            MapWord::FromForwardingAddress(object).ToMap()) == map) {
+      surviving_new_large_objects_.insert({object, map});
+
+      if (!ContainsOnlyData(map->visitor_id())) {
+        promotion_list_.PushLargeObject(object, map, object_size);
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
 SlotCallbackResult Scavenger::EvacuateObjectDefault(Map* map,
                                                     HeapObjectReference** slot,
                                                     HeapObject* object,
@@ -149,6 +245,10 @@ SlotCallbackResult Scavenger::EvacuateObjectDefault(Map* map,
   SLOW_DCHECK(object_size <= Page::kAllocatableMemory);
   SLOW_DCHECK(object->SizeFromMap(map) == object_size);
   CopyAndForwardResult result;
+
+  if (HandleLargeObject(map, object, object_size)) {
+    return REMOVE_SLOT;
+  }
 
   if (!heap()->ShouldBePromoted(object->address())) {
     // A semi-space copy may fail due to fragmentation. In that case, we
@@ -181,16 +281,14 @@ SlotCallbackResult Scavenger::EvacuateThinString(Map* map, HeapObject** slot,
                                                  ThinString* object,
                                                  int object_size) {
   if (!is_incremental_marking_) {
-    // Loading actual is fine in a parallel setting since there is no write.
+    // The ThinString should die after Scavenge, so avoid writing the proper
+    // forwarding pointer and instead just signal the actual object as forwarded
+    // reference.
     String* actual = object->actual();
-    object->set_length(0);
-    *slot = actual;
-    // ThinStrings always refer to internalized strings, which are
-    // always in old space.
+    // ThinStrings always refer to internalized strings, which are always in old
+    // space.
     DCHECK(!Heap::InNewSpace(actual));
-    base::AsAtomicPointer::Release_Store(
-        reinterpret_cast<Map**>(object->address()),
-        MapWord::FromForwardingAddress(actual).ToMap());
+    *slot = actual;
     return REMOVE_SLOT;
   }
 

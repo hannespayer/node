@@ -133,10 +133,10 @@ function makeWorkerCodeForOpcode(compareExchangeOpcode, size, functionName,
         .exportAs(functionName);
 }
 
-function generateSequence(typedarray, start, count, size) {
+function generateSequence(typedarray, start, count) {
     let end = count + start;
     for (let i = start; i < end; i++) {
-        typedarray[i] = Math.floor(Math.random() * (1 << (size - 1)) * 2);
+        typedarray[i] = Math.floor(Math.random() * 256);
     }
 }
 
@@ -174,8 +174,7 @@ function waitForWorkers(workers) {
     }
 }
 
-function testOpcode(opcode, ta_constructor) {
-    let opcodeSize = 8 * ta_constructor.BYTES_PER_ELEMENT;
+function testOpcode(opcode, opcodeSize) {
     print("Testing I32AtomicCompareExchange" + opcodeSize);
     let builder = new WasmModuleBuilder();
     builder.addImportedMemory("m", "imported_mem", 0, 1, "shared");
@@ -187,22 +186,22 @@ function testOpcode(opcode, ta_constructor) {
         maximum: 1,
         shared: true
     });
-    let memoryView = new ta_constructor(memory.buffer);
-    let sequenceStartInView = kSequenceStartAddress / ta_constructor.BYTES_PER_ELEMENT;
-    generateSequence(memoryView, sequenceStartInView, kSequenceLength,
-        opcodeSize);
+    let memoryView = new Uint8Array(memory.buffer);
+    generateSequence(memoryView, kSequenceStartAddress, kSequenceLength * (opcodeSize / 8));
 
     let module = new WebAssembly.Module(builder.toBuffer());
     let workers = spawnWorker(module, memory, 0, kSequenceStartAddress);
 
     // Fire the workers off
-    memoryView[0] = memoryView[sequenceStartInView];
+    for (let i = opcodeSize / 8 - 1; i >= 0; i--) {
+        memoryView[i] = memoryView[kSequenceStartAddress + i];
+    }
 
     waitForWorkers(workers);
 
     print("DONE");
 }
 
-testOpcode(kExprI32AtomicCompareExchange, Int32Array);
-testOpcode(kExprI32AtomicCompareExchange16U, Int16Array);
-testOpcode(kExprI32AtomicCompareExchange8U, Int8Array);
+testOpcode(kExprI32AtomicCompareExchange, 32);
+testOpcode(kExprI32AtomicCompareExchange16U, 16);
+testOpcode(kExprI32AtomicCompareExchange8U, 8);

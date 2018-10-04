@@ -34,13 +34,16 @@ void BuiltinSerializer::SerializeBuiltinsAndHandlers() {
     SerializeBuiltin(code);
   }
 
-  // Pad with kNop since GetInt() might read too far.
-  Pad();
-
   // Append the offset table. During deserialization, the offset table is
   // extracted by BuiltinSnapshotData.
   const byte* data = reinterpret_cast<const byte*>(&code_offsets_[0]);
   int data_length = static_cast<int>(sizeof(code_offsets_));
+
+  // Pad with kNop since GetInt() might read too far.
+  Pad(data_length);
+
+  // Append the offset table. During deserialization, the offset table is
+  // extracted by BuiltinSnapshotData.
   sink_.PutRaw(data, data_length, "BuiltinOffsets");
 }
 
@@ -67,8 +70,8 @@ void BuiltinSerializer::SerializeObject(HeapObject* o, HowToCode how_to_code,
   DCHECK(!o->IsSmi());
 
   // Roots can simply be serialized as root references.
-  int root_index = root_index_map()->Lookup(o);
-  if (root_index != RootIndexMap::kInvalidRootIndex) {
+  RootIndex root_index;
+  if (root_index_map()->Lookup(o, &root_index)) {
     DCHECK(startup_serializer_->root_has_been_serialized(root_index));
     PutRoot(root_index, o, how_to_code, where_to_point, skip);
     return;

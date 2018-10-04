@@ -4,6 +4,7 @@
 
 #include "test/unittests/compiler/graph-unittest.h"
 
+#include "src/compiler/js-heap-copy-reducer.h"
 #include "src/compiler/node-properties.h"
 #include "src/heap/factory.h"
 #include "src/objects-inl.h"  // TODO(everyone): Make typer.h IWYU compliant.
@@ -24,6 +25,7 @@ GraphTest::GraphTest(int num_parameters)
       node_origins_(&graph_) {
   graph()->SetStart(graph()->NewNode(common()->Start(num_parameters)));
   graph()->SetEnd(graph()->NewNode(common()->End(1), graph()->start()));
+  js_heap_broker()->SetNativeContextRef();
 }
 
 
@@ -118,7 +120,7 @@ Matcher<Node*> GraphTest::IsUndefinedConstant() {
 
 TypedGraphTest::TypedGraphTest(int num_parameters)
     : GraphTest(num_parameters),
-      typer_(isolate(), js_heap_broker(), Typer::kNoFlags, graph()) {}
+      typer_(js_heap_broker(), Typer::kNoFlags, graph()) {}
 
 TypedGraphTest::~TypedGraphTest() = default;
 

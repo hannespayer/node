@@ -1492,6 +1492,9 @@ void DeclarationScope::ResetAfterPreparsing(AstValueFactory* ast_value_factory,
   rare_data_ = nullptr;
   has_rest_ = false;
 
+  DCHECK_NE(zone_, ast_value_factory->zone());
+  zone_->ReleaseMemory();
+
   if (aborted) {
     // Prepare scope for use in the outer zone.
     zone_ = ast_value_factory->zone();
@@ -1533,18 +1536,24 @@ void DeclarationScope::SavePreParsedScopeDataForDeclarationScope() {
 
 void DeclarationScope::AnalyzePartially(AstNodeFactory* ast_node_factory) {
   DCHECK(!force_eager_compilation_);
-  ThreadedList<VariableProxy> new_unresolved_list;
-  if (!outer_scope_->is_script_scope() ||
-      (FLAG_preparser_scope_analysis &&
-       preparsed_scope_data_builder_ != nullptr &&
-       preparsed_scope_data_builder_->ContainsInnerFunctions())) {
+  base::ThreadedList<VariableProxy> new_unresolved_list;
+  if (!IsArrowFunction(function_kind_) &&
+      (!outer_scope_->is_script_scope() ||
+       (FLAG_preparser_scope_analysis &&
+        preparsed_scope_data_builder_ != nullptr &&
+        preparsed_scope_data_builder_->ContainsInnerFunctions()))) {
     // Try to resolve unresolved variables for this Scope and migrate those
     // which cannot be resolved inside. It doesn't make sense to try to resolve
     // them in the outer Scopes here, because they are incomplete.
     ResolveScopesThenForEachVariable(
         this, [=, &new_unresolved_list](VariableProxy* proxy) {
-          VariableProxy* copy = ast_node_factory->CopyVariableProxy(proxy);
-          new_unresolved_list.AddFront(copy);
+          // Don't copy unresolved references to the script scope, unless it's a
+          // reference to a private field. In that case keep it so we can fail
+          // later.
+          if (!outer_scope_->is_script_scope() || proxy->is_private_field()) {
+            VariableProxy* copy = ast_node_factory->CopyVariableProxy(proxy);
+            new_unresolved_list.AddFront(copy);
+          }
         });
 
     // Migrate function_ to the right Zone.

@@ -19,8 +19,10 @@
 #include "src/extensions/trigger-failure-extension.h"
 #include "src/heap/heap.h"
 #include "src/isolate-inl.h"
+#include "src/math-random.h"
 #include "src/objects/api-callbacks.h"
 #include "src/objects/arguments.h"
+#include "src/objects/builtin-function-id.h"
 #include "src/objects/hash-table-inl.h"
 #ifdef V8_INTL_SUPPORT
 #include "src/objects/intl-objects.h"
@@ -2087,10 +2089,23 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
                           Builtins::kStringPrototypeToString, 0, true);
     SimpleInstallFunction(isolate_, prototype, "trim",
                           Builtins::kStringPrototypeTrim, 0, false);
-    SimpleInstallFunction(isolate_, prototype, "trimLeft",
-                          Builtins::kStringPrototypeTrimStart, 0, false);
-    SimpleInstallFunction(isolate_, prototype, "trimRight",
-                          Builtins::kStringPrototypeTrimEnd, 0, false);
+
+    // Install `String.prototype.trimStart` with `trimLeft` alias.
+    Handle<JSFunction> trim_start_fun =
+        SimpleInstallFunction(isolate_, prototype, "trimStart",
+                              Builtins::kStringPrototypeTrimStart, 0, false);
+    JSObject::AddProperty(isolate_, prototype,
+                          factory->InternalizeUtf8String("trimLeft"),
+                          trim_start_fun, DONT_ENUM);
+
+    // Install `String.prototype.trimEnd` with `trimRight` alias.
+    Handle<JSFunction> trim_end_fun =
+        SimpleInstallFunction(isolate_, prototype, "trimEnd",
+                              Builtins::kStringPrototypeTrimEnd, 0, false);
+    JSObject::AddProperty(isolate_, prototype,
+                          factory->InternalizeUtf8String("trimRight"),
+                          trim_end_fun, DONT_ENUM);
+
     SimpleInstallFunction(isolate_, prototype, "toLocaleLowerCase",
                           Builtins::kStringPrototypeToLocaleLowerCase, 0,
                           false);
@@ -2139,8 +2154,10 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
         JS_STRING_ITERATOR_TYPE, JSStringIterator::kSize, 0,
         string_iterator_prototype, Builtins::kIllegal);
     string_iterator_function->shared()->set_native(false);
-    native_context()->set_string_iterator_map(
+    native_context()->set_initial_string_iterator_map(
         string_iterator_function->initial_map());
+    native_context()->set_initial_string_iterator_prototype(
+        *string_iterator_prototype);
   }
 
   {  // --- S y m b o l ---
@@ -2881,6 +2898,8 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
                           Builtins::kConsoleProfileEnd, 1, false, NONE);
     SimpleInstallFunction(isolate_, console, "time", Builtins::kConsoleTime, 1,
                           false, NONE);
+    SimpleInstallFunction(isolate_, console, "timeLog",
+                          Builtins::kConsoleTimeLog, 1, false, NONE);
     SimpleInstallFunction(isolate_, console, "timeEnd",
                           Builtins::kConsoleTimeEnd, 1, false, NONE);
     SimpleInstallFunction(isolate_, console, "timeStamp",
@@ -2926,6 +2945,10 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
           isolate_, prototype, factory->to_string_tag_symbol(),
           factory->Object_string(),
           static_cast<PropertyAttributes>(DONT_ENUM | READ_ONLY));
+
+      SimpleInstallFunction(isolate_, prototype, "resolvedOptions",
+                            Builtins::kDateTimeFormatPrototypeResolvedOptions,
+                            0, false);
 
       SimpleInstallFunction(isolate_, prototype, "formatToParts",
                             Builtins::kDateTimeFormatPrototypeFormatToParts, 1,
@@ -3310,6 +3333,14 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
                           Builtins::kDataViewPrototypeGetFloat64, 1, false);
     SimpleInstallFunction(isolate_, prototype, "setFloat64",
                           Builtins::kDataViewPrototypeSetFloat64, 2, false);
+    SimpleInstallFunction(isolate_, prototype, "getBigInt64",
+                          Builtins::kDataViewPrototypeGetBigInt64, 1, false);
+    SimpleInstallFunction(isolate_, prototype, "setBigInt64",
+                          Builtins::kDataViewPrototypeSetBigInt64, 2, false);
+    SimpleInstallFunction(isolate_, prototype, "getBigUint64",
+                          Builtins::kDataViewPrototypeGetBigUint64, 1, false);
+    SimpleInstallFunction(isolate_, prototype, "setBigUint64",
+                          Builtins::kDataViewPrototypeSetBigUint64, 2, false);
   }
 
   {  // -- M a p
@@ -3369,6 +3400,48 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
     native_context()->set_initial_map_prototype_map(prototype->map());
 
     InstallSpeciesGetter(isolate_, js_map_fun);
+  }
+
+  {  // -- B i g I n t
+    Handle<JSFunction> bigint_fun = InstallFunction(
+        isolate_, global, "BigInt", JS_VALUE_TYPE, JSValue::kSize, 0,
+        factory->the_hole_value(), Builtins::kBigIntConstructor);
+    bigint_fun->shared()->set_builtin_function_id(
+        BuiltinFunctionId::kBigIntConstructor);
+    bigint_fun->shared()->DontAdaptArguments();
+    bigint_fun->shared()->set_length(1);
+    InstallWithIntrinsicDefaultProto(isolate_, bigint_fun,
+                                     Context::BIGINT_FUNCTION_INDEX);
+
+    // Install the properties of the BigInt constructor.
+    // asUintN(bits, bigint)
+    SimpleInstallFunction(isolate_, bigint_fun, "asUintN",
+                          Builtins::kBigIntAsUintN, 2, false);
+    // asIntN(bits, bigint)
+    SimpleInstallFunction(isolate_, bigint_fun, "asIntN",
+                          Builtins::kBigIntAsIntN, 2, false);
+
+    // Set up the %BigIntPrototype%.
+    Handle<JSObject> prototype(JSObject::cast(bigint_fun->instance_prototype()),
+                               isolate_);
+    JSFunction::SetPrototype(bigint_fun, prototype);
+
+    // Install the properties of the BigInt.prototype.
+    // "constructor" is created implicitly by InstallFunction() above.
+    // toLocaleString([reserved1 [, reserved2]])
+    SimpleInstallFunction(isolate_, prototype, "toLocaleString",
+                          Builtins::kBigIntPrototypeToLocaleString, 0, false);
+    // toString([radix])
+    SimpleInstallFunction(isolate_, prototype, "toString",
+                          Builtins::kBigIntPrototypeToString, 0, false);
+    // valueOf()
+    SimpleInstallFunction(isolate_, prototype, "valueOf",
+                          Builtins::kBigIntPrototypeValueOf, 0, false);
+    // @@toStringTag
+    JSObject::AddProperty(
+        isolate_, prototype, factory->to_string_tag_symbol(),
+        factory->BigInt_string(),
+        static_cast<PropertyAttributes>(DONT_ENUM | READ_ONLY));
   }
 
   {  // -- S e t
@@ -4026,17 +4099,17 @@ void Bootstrapper::ExportFromRuntime(Isolate* isolate,
   Factory* factory = isolate->factory();
   HandleScope scope(isolate);
   Handle<NativeContext> native_context = isolate->native_context();
-#define EXPORT_PRIVATE_SYMBOL(NAME)                                       \
+#define EXPORT_PRIVATE_SYMBOL(_, NAME)                                    \
   Handle<String> NAME##_name = factory->NewStringFromAsciiChecked(#NAME); \
   JSObject::AddProperty(isolate, container, NAME##_name, factory->NAME(), NONE);
-  PRIVATE_SYMBOL_LIST(EXPORT_PRIVATE_SYMBOL)
+  PRIVATE_SYMBOL_LIST_GENERATOR(EXPORT_PRIVATE_SYMBOL, /* not used */)
 #undef EXPORT_PRIVATE_SYMBOL
 
-#define EXPORT_PUBLIC_SYMBOL(NAME, DESCRIPTION)                           \
+#define EXPORT_PUBLIC_SYMBOL(_, NAME, DESCRIPTION)                        \
   Handle<String> NAME##_name = factory->NewStringFromAsciiChecked(#NAME); \
   JSObject::AddProperty(isolate, container, NAME##_name, factory->NAME(), NONE);
-  PUBLIC_SYMBOL_LIST(EXPORT_PUBLIC_SYMBOL)
-  WELL_KNOWN_SYMBOL_LIST(EXPORT_PUBLIC_SYMBOL)
+  PUBLIC_SYMBOL_LIST_GENERATOR(EXPORT_PUBLIC_SYMBOL, /* not used */)
+  WELL_KNOWN_SYMBOL_LIST_GENERATOR(EXPORT_PUBLIC_SYMBOL, /* not used */)
 #undef EXPORT_PUBLIC_SYMBOL
 
   Handle<JSObject> iterator_prototype(
@@ -4312,7 +4385,6 @@ void Bootstrapper::ExportFromRuntime(Isolate* isolate,
   void Genesis::InitializeGlobal_##id() {}
 
 EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(harmony_do_expressions)
-EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(harmony_function_tostring)
 EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(harmony_public_fields)
 EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(harmony_private_fields)
 EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(harmony_static_fields)
@@ -4320,6 +4392,8 @@ EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(harmony_class_fields)
 EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(harmony_dynamic_import)
 EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(harmony_import_meta)
 EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(harmony_numeric_separator)
+EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(harmony_json_stringify)
+EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(harmony_regexp_sequence)
 
 #undef EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE
 
@@ -4353,40 +4427,6 @@ void Genesis::InitializeGlobal_harmony_sharedarraybuffer() {
     JSObject::AddProperty(
         isolate_, isolate()->atomics_object(), factory->to_string_tag_symbol(),
         name, static_cast<PropertyAttributes>(DONT_ENUM | READ_ONLY));
-  }
-}
-
-void Genesis::InitializeGlobal_harmony_string_trimming() {
-  if (!FLAG_harmony_string_trimming) return;
-
-  Handle<JSGlobalObject> global(native_context()->global_object(), isolate());
-  Factory* factory = isolate()->factory();
-
-  Handle<JSObject> string_prototype(
-      native_context()->initial_string_prototype(), isolate());
-
-  {
-    Handle<String> trim_left_name = factory->InternalizeUtf8String("trimLeft");
-    Handle<String> trim_start_name =
-        factory->InternalizeUtf8String("trimStart");
-    Handle<JSFunction> trim_left_fun = Handle<JSFunction>::cast(
-        JSObject::GetProperty(isolate_, string_prototype, trim_left_name)
-            .ToHandleChecked());
-    JSObject::AddProperty(isolate_, string_prototype, trim_start_name,
-                          trim_left_fun, DONT_ENUM);
-    trim_left_fun->shared()->SetName(*trim_start_name);
-  }
-
-  {
-    Handle<String> trim_right_name =
-        factory->InternalizeUtf8String("trimRight");
-    Handle<String> trim_end_name = factory->InternalizeUtf8String("trimEnd");
-    Handle<JSFunction> trim_right_fun = Handle<JSFunction>::cast(
-        JSObject::GetProperty(isolate_, string_prototype, trim_right_name)
-            .ToHandleChecked());
-    JSObject::AddProperty(isolate_, string_prototype, trim_end_name,
-                          trim_right_fun, DONT_ENUM);
-    trim_right_fun->shared()->SetName(*trim_end_name);
   }
 }
 
@@ -4498,75 +4538,6 @@ void Genesis::InitializeGlobal_harmony_string_matchall() {
     InstallConstant(isolate(), symbol_fun, "matchAll",
                     factory()->match_all_symbol());
   }
-}
-
-void Genesis::InitializeGlobal_harmony_bigint() {
-  Factory* factory = isolate()->factory();
-  Handle<JSGlobalObject> global(native_context()->global_object(), isolate());
-  if (!FLAG_harmony_bigint) {
-    // Typed arrays are installed by default; remove them if the flag is off.
-    CHECK(JSObject::DeleteProperty(
-              global, factory->InternalizeUtf8String("BigInt64Array"))
-              .ToChecked());
-    CHECK(JSObject::DeleteProperty(
-              global, factory->InternalizeUtf8String("BigUint64Array"))
-              .ToChecked());
-    return;
-  }
-
-  Handle<JSFunction> bigint_fun = InstallFunction(
-      isolate(), global, "BigInt", JS_VALUE_TYPE, JSValue::kSize, 0,
-      factory->the_hole_value(), Builtins::kBigIntConstructor);
-  bigint_fun->shared()->set_builtin_function_id(
-      BuiltinFunctionId::kBigIntConstructor);
-  bigint_fun->shared()->DontAdaptArguments();
-  bigint_fun->shared()->set_length(1);
-  InstallWithIntrinsicDefaultProto(isolate(), bigint_fun,
-                                   Context::BIGINT_FUNCTION_INDEX);
-
-  // Install the properties of the BigInt constructor.
-  // asUintN(bits, bigint)
-  SimpleInstallFunction(isolate(), bigint_fun, "asUintN",
-                        Builtins::kBigIntAsUintN, 2, false);
-  // asIntN(bits, bigint)
-  SimpleInstallFunction(isolate(), bigint_fun, "asIntN",
-                        Builtins::kBigIntAsIntN, 2, false);
-
-  // Set up the %BigIntPrototype%.
-  Handle<JSObject> prototype(JSObject::cast(bigint_fun->instance_prototype()),
-                             isolate());
-  JSFunction::SetPrototype(bigint_fun, prototype);
-
-  // Install the properties of the BigInt.prototype.
-  // "constructor" is created implicitly by InstallFunction() above.
-  // toLocaleString([reserved1 [, reserved2]])
-  SimpleInstallFunction(isolate(), prototype, "toLocaleString",
-                        Builtins::kBigIntPrototypeToLocaleString, 0, false);
-  // toString([radix])
-  SimpleInstallFunction(isolate(), prototype, "toString",
-                        Builtins::kBigIntPrototypeToString, 0, false);
-  // valueOf()
-  SimpleInstallFunction(isolate(), prototype, "valueOf",
-                        Builtins::kBigIntPrototypeValueOf, 0, false);
-  // @@toStringTag
-  JSObject::AddProperty(isolate(), prototype, factory->to_string_tag_symbol(),
-                        factory->BigInt_string(),
-                        static_cast<PropertyAttributes>(DONT_ENUM | READ_ONLY));
-
-  // Install 64-bit DataView accessors.
-  // TODO(jkummerow): Move these to the "DataView" section when dropping the
-  // FLAG_harmony_bigint.
-  Handle<JSObject> dataview_prototype(
-      JSObject::cast(native_context()->data_view_fun()->instance_prototype()),
-      isolate());
-  SimpleInstallFunction(isolate(), dataview_prototype, "getBigInt64",
-                        Builtins::kDataViewPrototypeGetBigInt64, 1, false);
-  SimpleInstallFunction(isolate(), dataview_prototype, "setBigInt64",
-                        Builtins::kDataViewPrototypeSetBigInt64, 2, false);
-  SimpleInstallFunction(isolate(), dataview_prototype, "getBigUint64",
-                        Builtins::kDataViewPrototypeGetBigUint64, 1, false);
-  SimpleInstallFunction(isolate(), dataview_prototype, "setBigUint64",
-                        Builtins::kDataViewPrototypeSetBigUint64, 2, false);
 }
 
 void Genesis::InitializeGlobal_harmony_await_optimization() {
@@ -4767,8 +4738,6 @@ void Genesis::InitializeGlobal_harmony_intl_relative_time_format() {
 }
 
 #endif  // V8_INTL_SUPPORT
-
-void Genesis::InitializeGlobal_harmony_regexp_sequence() {}
 
 Handle<JSFunction> Genesis::CreateArrayBuffer(
     Handle<String> name, ArrayBufferKind array_buffer_kind) {
@@ -5768,6 +5737,7 @@ Genesis::Genesis(
     DCHECK_EQ(0u, context_snapshot_index);
     // We get here if there was no context snapshot.
     CreateRoots();
+    MathRandom::InitializeContext(isolate, native_context());
     Handle<JSFunction> empty_function = CreateEmptyFunction();
     CreateSloppyModeFunctionMaps(empty_function);
     CreateStrictModeFunctionMaps(empty_function);

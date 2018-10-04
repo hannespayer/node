@@ -58,7 +58,9 @@
 #include "src/objects/js-regexp-inl.h"
 #include "src/objects/module-inl.h"
 #include "src/objects/ordered-hash-table-inl.h"
+#include "src/objects/stack-frame-info-inl.h"
 #include "src/objects/templates.h"
+#include "src/parsing/parse-info.h"
 #include "src/parsing/parser.h"
 #include "src/parsing/scanner-character-streams.h"
 #include "src/pending-compilation-error-handler.h"
@@ -834,6 +836,7 @@ StartupData SnapshotCreator::CreateBlob(
   }
   data->created_ = true;
 
+  DCHECK(i::Snapshot::VerifyChecksum(&result));
   return result;
 }
 
@@ -2009,9 +2012,7 @@ ScriptCompiler::CachedData::~CachedData() {
   }
 }
 
-
 bool ScriptCompiler::ExternalSourceStream::SetBookmark() { return false; }
-
 
 void ScriptCompiler::ExternalSourceStream::ResetToBookmark() { UNREACHABLE(); }
 
@@ -2019,14 +2020,7 @@ ScriptCompiler::StreamedSource::StreamedSource(ExternalSourceStream* stream,
                                                Encoding encoding)
     : impl_(new i::ScriptStreamingData(stream, encoding)) {}
 
-ScriptCompiler::StreamedSource::~StreamedSource() { delete impl_; }
-
-
-const ScriptCompiler::CachedData*
-ScriptCompiler::StreamedSource::GetCachedData() const {
-  return impl_->cached_data.get();
-}
-
+ScriptCompiler::StreamedSource::~StreamedSource() = default;
 
 Local<Script> UnboundScript::BindToCurrentContext() {
   auto function_info =
@@ -2037,7 +2031,6 @@ Local<Script> UnboundScript::BindToCurrentContext() {
           function_info, isolate->native_context());
   return ToApiHandle<Script>(function);
 }
-
 
 int UnboundScript::GetId() {
   auto function_info =
@@ -2534,6 +2527,7 @@ MaybeLocal<Function> ScriptCompiler::CompileFunctionInContext(
   RETURN_ESCAPED(Utils::CallableToLocal(result));
 }
 
+void ScriptCompiler::ScriptStreamingTask::Run() { data_->task->Run(); }
 
 ScriptCompiler::ScriptStreamingTask* ScriptCompiler::StartStreamingScript(
     Isolate* v8_isolate, StreamedSource* source, CompileOptions options) {
@@ -2544,9 +2538,12 @@ ScriptCompiler::ScriptStreamingTask* ScriptCompiler::StartStreamingScript(
   // TODO(rmcilroy): remove CompileOptions from the API.
   CHECK(options == ScriptCompiler::kNoCompileOptions);
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(v8_isolate);
-  return i::Compiler::NewBackgroundCompileTask(source->impl(), isolate);
+  i::ScriptStreamingData* data = source->impl();
+  std::unique_ptr<i::BackgroundCompileTask> task =
+      base::make_unique<i::BackgroundCompileTask>(data, isolate);
+  data->task = std::move(task);
+  return new ScriptCompiler::ScriptStreamingTask(data);
 }
-
 
 MaybeLocal<Script> ScriptCompiler::Compile(Local<Context> context,
                                            StreamedSource* v8_source,
@@ -2562,11 +2559,11 @@ MaybeLocal<Script> ScriptCompiler::Compile(Local<Context> context,
       isolate, origin.ResourceName(), origin.ResourceLineOffset(),
       origin.ResourceColumnOffset(), origin.SourceMapUrl(),
       origin.HostDefinedOptions());
-  i::ScriptStreamingData* streaming_data = v8_source->impl();
+  i::ScriptStreamingData* data = v8_source->impl();
 
   i::MaybeHandle<i::SharedFunctionInfo> maybe_function_info =
       i::Compiler::GetSharedFunctionInfoForStreamedScript(
-          isolate, str, script_details, origin.Options(), streaming_data);
+          isolate, str, script_details, origin.Options(), data);
 
   i::Handle<i::SharedFunctionInfo> result;
   has_pending_exception = !maybe_function_info.ToHandle(&result);
@@ -3568,17 +3565,20 @@ MaybeLocal<BigInt> Value::ToBigInt(Local<Context> context) const {
   RETURN_ESCAPED(result);
 }
 
+bool Value::BooleanValue(Isolate* v8_isolate) const {
+  return Utils::OpenHandle(this)->BooleanValue(
+      reinterpret_cast<i::Isolate*>(v8_isolate));
+}
+
 MaybeLocal<Boolean> Value::ToBoolean(Local<Context> context) const {
-  auto obj = Utils::OpenHandle(this);
-  if (obj->IsBoolean()) return ToApiHandle<Boolean>(obj);
-  auto isolate = reinterpret_cast<i::Isolate*>(context->GetIsolate());
-  auto val = isolate->factory()->ToBoolean(obj->BooleanValue(isolate));
-  return ToApiHandle<Boolean>(val);
+  return ToBoolean(context->GetIsolate());
 }
 
 
 Local<Boolean> Value::ToBoolean(Isolate* v8_isolate) const {
-  return ToBoolean(v8_isolate->GetCurrentContext()).ToLocalChecked();
+  auto isolate = reinterpret_cast<i::Isolate*>(v8_isolate);
+  return ToApiHandle<Boolean>(
+      isolate->factory()->ToBoolean(BooleanValue(v8_isolate)));
 }
 
 
@@ -6729,7 +6729,6 @@ double v8::NumberObject::ValueOf() const {
 }
 
 Local<v8::Value> v8::BigIntObject::New(Isolate* isolate, int64_t value) {
-  CHECK(i::FLAG_harmony_bigint);
   i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
   LOG_API(i_isolate, BigIntObject, New);
   ENTER_V8_NO_SCRIPT_NO_EXCEPTION(i_isolate);
@@ -7911,7 +7910,6 @@ Local<Integer> v8::Integer::NewFromUnsigned(Isolate* isolate, uint32_t value) {
 }
 
 Local<BigInt> v8::BigInt::New(Isolate* isolate, int64_t value) {
-  CHECK(i::FLAG_harmony_bigint);
   i::Isolate* internal_isolate = reinterpret_cast<i::Isolate*>(isolate);
   ENTER_V8_NO_SCRIPT_NO_EXCEPTION(internal_isolate);
   i::Handle<i::BigInt> result = i::BigInt::FromInt64(internal_isolate, value);
@@ -7919,7 +7917,6 @@ Local<BigInt> v8::BigInt::New(Isolate* isolate, int64_t value) {
 }
 
 Local<BigInt> v8::BigInt::NewFromUnsigned(Isolate* isolate, uint64_t value) {
-  CHECK(i::FLAG_harmony_bigint);
   i::Isolate* internal_isolate = reinterpret_cast<i::Isolate*>(isolate);
   ENTER_V8_NO_SCRIPT_NO_EXCEPTION(internal_isolate);
   i::Handle<i::BigInt> result = i::BigInt::FromUint64(internal_isolate, value);
@@ -7929,7 +7926,6 @@ Local<BigInt> v8::BigInt::NewFromUnsigned(Isolate* isolate, uint64_t value) {
 MaybeLocal<BigInt> v8::BigInt::NewFromWords(Local<Context> context,
                                             int sign_bit, int word_count,
                                             const uint64_t* words) {
-  CHECK(i::FLAG_harmony_bigint);
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(context->GetIsolate());
   ENTER_V8_NO_SCRIPT(isolate, context, BigInt, NewFromWords,
                      MaybeLocal<BigInt>(), InternalEscapableScope);
@@ -8209,7 +8205,11 @@ void Isolate::Initialize(Isolate* isolate,
   if (params.entry_hook || !i::Snapshot::Initialize(i_isolate)) {
     // If snapshot data was provided and we failed to deserialize it must
     // have been corrupted.
-    CHECK_NULL(i_isolate->snapshot_blob());
+    if (i_isolate->snapshot_blob() != nullptr) {
+      FATAL(
+          "Failed to deserialize the V8 snapshot blob. This can mean that the "
+          "snapshot blob file is corrupted or missing.");
+    }
     base::ElapsedTimer timer;
     if (i::FLAG_profile_deserialization) timer.Start();
     i_isolate->Init(nullptr);
@@ -8715,7 +8715,7 @@ void Isolate::GetCodeRange(void** start, size_t* length_in_bytes) {
   *length_in_bytes = code_range.size();
 }
 
-MemoryRange Isolate::GetBuiltinsCodeRange() {
+MemoryRange Isolate::GetEmbeddedCodeRange() {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(this);
   return {reinterpret_cast<const void*>(isolate->embedded_blob()),
           isolate->embedded_blob_size()};
@@ -9697,10 +9697,10 @@ int debug::GetNativeAccessorDescriptor(v8::Local<v8::Context> context,
   }
   auto isolate = reinterpret_cast<i::Isolate*>(context->GetIsolate());
   int result = 0;
-#define IS_BUILTIN_ACESSOR(name, ...)                       \
+#define IS_BUILTIN_ACESSOR(_, name, ...)                    \
   if (*structure == *isolate->factory()->name##_accessor()) \
     result |= static_cast<int>(debug::NativeAccessorType::IsBuiltin);
-  ACCESSOR_INFO_LIST(IS_BUILTIN_ACESSOR)
+  ACCESSOR_INFO_LIST_GENERATOR(IS_BUILTIN_ACESSOR, /* not used */)
 #undef IS_BUILTIN_ACESSOR
   i::Handle<i::AccessorInfo> accessor_info =
       i::Handle<i::AccessorInfo>::cast(structure);

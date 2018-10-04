@@ -44,6 +44,7 @@ class JSGeneratorObject;
 class JSMap;
 class JSMapIterator;
 class JSModuleNamespace;
+class JSPromise;
 class JSProxy;
 class JSSet;
 class JSSetIterator;
@@ -56,6 +57,7 @@ class PreParsedScopeData;
 class PromiseResolveThenableJobTask;
 class RegExpMatchInfo;
 class ScriptContextTable;
+class StackFrameInfo;
 class StoreHandler;
 class TemplateObjectDescription;
 class UncompiledDataWithoutPreParsedScope;
@@ -668,13 +670,6 @@ class V8_EXPORT_PRIVATE Factory {
   Handle<JSMap> NewJSMap();
   Handle<JSSet> NewJSSet();
 
-  Handle<JSMapIterator> NewJSMapIterator(Handle<Map> map,
-                                         Handle<OrderedHashMap> table,
-                                         int index);
-  Handle<JSSetIterator> NewJSSetIterator(Handle<Map> map,
-                                         Handle<OrderedHashSet> table,
-                                         int index);
-
   // Allocates a bound function.
   MaybeHandle<JSBoundFunction> NewJSBoundFunction(
       Handle<JSReceiver> target_function, Handle<Object> bound_this,
@@ -831,41 +826,9 @@ class V8_EXPORT_PRIVATE Factory {
 
   inline Handle<String> Uint32ToString(uint32_t value, bool check_cache = true);
 
-#define ROOT_ACCESSOR(type, name, camel_name) inline Handle<type> name();
+#define ROOT_ACCESSOR(type, name, CamelName) inline Handle<type> name();
   ROOT_LIST(ROOT_ACCESSOR)
 #undef ROOT_ACCESSOR
-
-#define STRUCT_MAP_ACCESSOR(NAME, Name, name) inline Handle<Map> name##_map();
-  STRUCT_LIST(STRUCT_MAP_ACCESSOR)
-#undef STRUCT_MAP_ACCESSOR
-
-#define ALLOCATION_SITE_MAP_ACCESSOR(NAME, Name, Size, name) \
-  inline Handle<Map> name##_map();
-  ALLOCATION_SITE_LIST(ALLOCATION_SITE_MAP_ACCESSOR)
-#undef ALLOCATION_SITE_MAP_ACCESSOR
-
-#define DATA_HANDLER_MAP_ACCESSOR(NAME, Name, Size, name) \
-  inline Handle<Map> name##_map();
-  DATA_HANDLER_LIST(DATA_HANDLER_MAP_ACCESSOR)
-#undef DATA_HANDLER_MAP_ACCESSOR
-
-#define STRING_ACCESSOR(name, str) inline Handle<String> name();
-  INTERNALIZED_STRING_LIST(STRING_ACCESSOR)
-#undef STRING_ACCESSOR
-
-#define SYMBOL_ACCESSOR(name) inline Handle<Symbol> name();
-  PRIVATE_SYMBOL_LIST(SYMBOL_ACCESSOR)
-#undef SYMBOL_ACCESSOR
-
-#define SYMBOL_ACCESSOR(name, description) inline Handle<Symbol> name();
-  PUBLIC_SYMBOL_LIST(SYMBOL_ACCESSOR)
-  WELL_KNOWN_SYMBOL_LIST(SYMBOL_ACCESSOR)
-#undef SYMBOL_ACCESSOR
-
-#define ACCESSOR_INFO_ACCESSOR(accessor_name, ...) \
-  inline Handle<AccessorInfo> accessor_name##_accessor();
-  ACCESSOR_INFO_LIST(ACCESSOR_INFO_ACCESSOR)
-#undef ACCESSOR_INFO_ACCESSOR
 
   // Allocates a new SharedFunctionInfo object.
   Handle<SharedFunctionInfo> NewSharedFunctionInfoForApiFunction(

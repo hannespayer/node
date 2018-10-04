@@ -129,108 +129,14 @@ class IdleScavengeObserver : public AllocationObserver {
 };
 
 Heap::Heap()
-    : external_memory_(0),
-      external_memory_limit_(kExternalAllocationSoftLimit),
-      external_memory_at_last_mark_compact_(0),
-      external_memory_concurrently_freed_(0),
-      isolate_(nullptr),
-      code_range_size_(0),
-      // semispace_size_ should be a power of 2 and old_generation_size_ should
-      // be a multiple of Page::kPageSize.
-      max_semi_space_size_(8 * (kPointerSize / 4) * MB),
-      initial_semispace_size_(kMinSemiSpaceSizeInKB * KB),
-      max_old_generation_size_(700ul * (kPointerSize / 4) * MB),
-      initial_max_old_generation_size_(max_old_generation_size_),
+    : initial_max_old_generation_size_(max_old_generation_size_),
       initial_old_generation_size_(max_old_generation_size_ /
                                    kInitalOldGenerationLimitFactor),
-      old_generation_size_configured_(false),
-      // Variables set based on semispace_size_ and old_generation_size_ in
-      // ConfigureHeap.
-      // Will be 4 * reserved_semispace_size_ to ensure that young
-      // generation can be aligned to its size.
-      maximum_committed_(0),
-      backing_store_bytes_(0),
-      survived_since_last_expansion_(0),
-      survived_last_scavenge_(0),
-      always_allocate_scope_count_(0),
       memory_pressure_level_(MemoryPressureLevel::kNone),
-      contexts_disposed_(0),
-      number_of_disposed_maps_(0),
-      new_space_(nullptr),
-      old_space_(nullptr),
-      code_space_(nullptr),
-      map_space_(nullptr),
-      lo_space_(nullptr),
-      new_lo_space_(nullptr),
-      read_only_space_(nullptr),
-      write_protect_code_memory_(false),
-      code_space_memory_modification_scope_depth_(0),
-      gc_state_(NOT_IN_GC),
-      gc_post_processing_depth_(0),
-      allocations_count_(0),
-      raw_allocations_hash_(0),
-      stress_marking_observer_(nullptr),
-      stress_scavenge_observer_(nullptr),
-      allocation_step_in_progress_(false),
-      max_marking_limit_reached_(0.0),
-      ms_count_(0),
-      gc_count_(0),
-      consecutive_ineffective_mark_compacts_(0),
-      mmap_region_base_(0),
-      remembered_unmapped_pages_index_(0),
       old_generation_allocation_limit_(initial_old_generation_size_),
-      inline_allocation_disabled_(false),
-      tracer_(nullptr),
-      promoted_objects_size_(0),
-      promotion_ratio_(0),
-      semi_space_copied_object_size_(0),
-      previous_semi_space_copied_object_size_(0),
-      semi_space_copied_rate_(0),
-      nodes_died_in_new_space_(0),
-      nodes_copied_in_new_space_(0),
-      nodes_promoted_(0),
-      maximum_size_scavenges_(0),
-      last_idle_notification_time_(0.0),
-      last_gc_time_(0.0),
-      mark_compact_collector_(nullptr),
-      minor_mark_compact_collector_(nullptr),
-      array_buffer_collector_(nullptr),
-      memory_allocator_(nullptr),
-      store_buffer_(nullptr),
-      incremental_marking_(nullptr),
-      concurrent_marking_(nullptr),
-      gc_idle_time_handler_(nullptr),
-      memory_reducer_(nullptr),
-      live_object_stats_(nullptr),
-      dead_object_stats_(nullptr),
-      scavenge_job_(nullptr),
-      idle_scavenge_observer_(nullptr),
-      new_space_allocation_counter_(0),
-      old_generation_allocation_counter_at_last_gc_(0),
-      old_generation_size_at_last_gc_(0),
       global_pretenuring_feedback_(kInitialFeedbackCapacity),
-      is_marking_flag_(false),
-      ring_buffer_full_(false),
-      ring_buffer_end_(0),
-      configured_(false),
-      current_gc_flags_(Heap::kNoGCFlags),
       current_gc_callback_flags_(GCCallbackFlags::kNoGCCallbackFlags),
-      external_string_table_(this),
-      gc_callbacks_depth_(0),
-      deserialization_complete_(false),
-      strong_roots_list_(nullptr),
-      heap_iterator_depth_(0),
-      local_embedder_heap_tracer_(nullptr),
-      fast_promotion_mode_(false),
-      force_oom_(false),
-      delay_sweeper_tasks_for_testing_(false),
-      pending_layout_change_object_(nullptr),
-      unprotected_memory_chunks_registry_enabled_(false)
-#ifdef V8_ENABLE_ALLOCATION_TIMEOUT
-      ,
-      allocation_timeout_(0)
-#endif  // V8_ENABLE_ALLOCATION_TIMEOUT
-{
+      external_string_table_(this) {
   // Ensure old_generation_size_ is a multiple of kPageSize.
   DCHECK_EQ(0, max_old_generation_size_ & (Page::kPageSize - 1));
 
@@ -2012,11 +1918,14 @@ void Heap::Scavenge() {
   new_space()->Flip();
   new_space()->ResetLinearAllocationArea();
 
+  // We also flip the young generation large object space. All large objects
+  // will be in the from space.
+  new_lo_space()->Flip();
+
   // Implements Cheney's copying algorithm
   LOG(isolate_, ResourceEvent("scavenge", "begin"));
 
-  ScavengerCollector scavenger_collector(this);
-  scavenger_collector.CollectGarbage();
+  scavenger_collector_->CollectGarbage();
 
   LOG(isolate_, ResourceEvent("scavenge", "end"));
 
@@ -2092,12 +2001,7 @@ String* Heap::UpdateNewSpaceReferenceInExternalStringTableEntry(Heap* heap,
 
   // String is still reachable.
   String* new_string = String::cast(first_word.ToForwardingAddress());
-  String* original_string = reinterpret_cast<String*>(*p);
-  // The length of the original string is used to disambiguate the scenario
-  // of a ThingString being forwarded to an ExternalString (which already exists
-  // in the OLD space), and an ExternalString being forwarded to its promoted
-  // copy. See Scavenger::EvacuateThinString.
-  if (new_string->IsThinString() || original_string->length() == 0) {
+  if (new_string->IsThinString()) {
     // Filtering Thin strings out of the external string table.
     return nullptr;
   } else if (new_string->IsExternalString()) {
@@ -2518,60 +2422,6 @@ void Heap::FlushNumberStringCache() {
   for (int i = 0; i < len; i++) {
     number_string_cache()->set_undefined(i);
   }
-}
-
-namespace {
-
-RootIndex RootIndexForFixedTypedArray(ExternalArrayType array_type) {
-  switch (array_type) {
-#define ARRAY_TYPE_TO_ROOT_INDEX(Type, type, TYPE, ctype) \
-  case kExternal##Type##Array:                            \
-    return RootIndex::kFixed##Type##ArrayMap;
-
-    TYPED_ARRAYS(ARRAY_TYPE_TO_ROOT_INDEX)
-#undef ARRAY_TYPE_TO_ROOT_INDEX
-  }
-  UNREACHABLE();
-}
-
-RootIndex RootIndexForFixedTypedArray(ElementsKind elements_kind) {
-  switch (elements_kind) {
-#define TYPED_ARRAY_CASE(Type, type, TYPE, ctype) \
-  case TYPE##_ELEMENTS:                           \
-    return RootIndex::kFixed##Type##ArrayMap;
-    TYPED_ARRAYS(TYPED_ARRAY_CASE)
-    default:
-      UNREACHABLE();
-#undef TYPED_ARRAY_CASE
-  }
-}
-
-RootIndex RootIndexForEmptyFixedTypedArray(ElementsKind elements_kind) {
-  switch (elements_kind) {
-#define ELEMENT_KIND_TO_ROOT_INDEX(Type, type, TYPE, ctype) \
-  case TYPE##_ELEMENTS:                                     \
-    return RootIndex::kEmptyFixed##Type##Array;
-
-    TYPED_ARRAYS(ELEMENT_KIND_TO_ROOT_INDEX)
-#undef ELEMENT_KIND_TO_ROOT_INDEX
-    default:
-      UNREACHABLE();
-  }
-}
-
-}  // namespace
-
-Map* Heap::MapForFixedTypedArray(ExternalArrayType array_type) {
-  return Map::cast(roots_[RootIndexForFixedTypedArray(array_type)]);
-}
-
-Map* Heap::MapForFixedTypedArray(ElementsKind elements_kind) {
-  return Map::cast(roots_[RootIndexForFixedTypedArray(elements_kind)]);
-}
-
-FixedTypedArrayBase* Heap::EmptyFixedTypedArrayForMap(const Map* map) {
-  return FixedTypedArrayBase::cast(
-      roots_[RootIndexForEmptyFixedTypedArray(map->elements_kind())]);
 }
 
 HeapObject* Heap::CreateFillerObjectAt(Address addr, int size,
@@ -3627,8 +3477,8 @@ bool Heap::RootIsImmortalImmovable(RootIndex root_index) {
 #define IMMORTAL_IMMOVABLE_ROOT(name) case RootIndex::k##name:
     IMMORTAL_IMMOVABLE_ROOT_LIST(IMMORTAL_IMMOVABLE_ROOT)
 #undef IMMORTAL_IMMOVABLE_ROOT
-#define INTERNALIZED_STRING(name, value) case RootIndex::k##name:
-    INTERNALIZED_STRING_LIST(INTERNALIZED_STRING)
+#define INTERNALIZED_STRING(_, name, value) case RootIndex::k##name:
+    INTERNALIZED_STRING_LIST_GENERATOR(INTERNALIZED_STRING, /* not used */)
 #undef INTERNALIZED_STRING
 #define STRING_TYPE(NAME, size, name, Name) case RootIndex::k##Name##Map:
     STRING_TYPE_LIST(STRING_TYPE)
@@ -3864,9 +3714,8 @@ void Heap::IterateWeakRoots(RootVisitor* v, VisitMode mode) {
   const bool isMinorGC = mode == VISIT_ALL_IN_SCAVENGE ||
                          mode == VISIT_ALL_IN_MINOR_MC_MARK ||
                          mode == VISIT_ALL_IN_MINOR_MC_UPDATE;
-  v->VisitRootPointer(
-      Root::kStringTable, nullptr,
-      reinterpret_cast<Object**>(&roots_[RootIndex::kStringTable]));
+  v->VisitRootPointer(Root::kStringTable, nullptr,
+                      &roots_[RootIndex::kStringTable]);
   v->Synchronize(VisitorSynchronization::kStringTable);
   if (!isMinorGC && mode != VISIT_ALL_IN_SWEEP_NEWSPACE &&
       mode != VISIT_FOR_SERIALIZATION) {
@@ -3940,8 +3789,7 @@ void Heap::IterateStrongRoots(RootVisitor* v, VisitMode mode) {
                          mode == VISIT_ALL_IN_MINOR_MC_MARK ||
                          mode == VISIT_ALL_IN_MINOR_MC_UPDATE;
   v->VisitRootPointers(Root::kStrongRootList, nullptr,
-                       &roots_[RootIndex::kRootsStart],
-                       &roots_[RootIndex::kStrongRootListLength]);
+                       roots_.strong_roots_begin(), roots_.strong_roots_end());
   v->Synchronize(VisitorSynchronization::kStrongRootList);
 
   isolate_->bootstrapper()->Iterate(v);
@@ -3969,10 +3817,8 @@ void Heap::IterateStrongRoots(RootVisitor* v, VisitMode mode) {
   if (!isMinorGC) {
     IterateBuiltins(v);
     v->Synchronize(VisitorSynchronization::kBuiltins);
-#ifndef V8_EMBEDDED_BYTECODE_HANDLERS
     isolate_->interpreter()->IterateDispatchTable(v);
     v->Synchronize(VisitorSynchronization::kDispatchTable);
-#endif  // V8_EMBEDDED_BYTECODE_HANDLERS
   }
 
   // Iterate over global handles.
@@ -4496,6 +4342,9 @@ void Heap::SetUp() {
   heap_controller_ = new HeapController(this);
 
   mark_compact_collector_ = new MarkCompactCollector(this);
+
+  scavenger_collector_ = new ScavengerCollector(this);
+
   incremental_marking_ =
       new IncrementalMarking(this, mark_compact_collector_->marking_worklist(),
                              mark_compact_collector_->weak_objects());
@@ -4697,7 +4546,10 @@ void Heap::RegisterExternallyReferencedObject(Object** object) {
   }
 }
 
-void Heap::StartTearDown() { SetGCState(TEAR_DOWN); }
+void Heap::StartTearDown() {
+  SetGCState(TEAR_DOWN);
+  isolate_->global_handles()->TearDown();
+}
 
 void Heap::TearDown() {
   DCHECK_EQ(gc_state_, TEAR_DOWN);
@@ -4757,6 +4609,11 @@ void Heap::TearDown() {
   }
 #endif  // ENABLE_MINOR_MC
 
+  if (scavenger_collector_ != nullptr) {
+    delete scavenger_collector_;
+    scavenger_collector_ = nullptr;
+  }
+
   if (array_buffer_collector_ != nullptr) {
     delete array_buffer_collector_;
     array_buffer_collector_ = nullptr;
@@ -4792,8 +4649,6 @@ void Heap::TearDown() {
 
   delete scavenge_job_;
   scavenge_job_ = nullptr;
-
-  isolate_->global_handles()->TearDown();
 
   external_string_table_.TearDown();
 

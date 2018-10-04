@@ -11,6 +11,12 @@
 namespace v8 {
 namespace internal {
 
+base::AddressRegion Isolate::root_register_addressable_region() {
+  Address start = reinterpret_cast<Address>(this);
+  Address end = heap_.root_register_addressable_end();
+  return base::AddressRegion(start, end - start);
+}
+
 bool Isolate::FromWritableHeapObject(HeapObject* obj, Isolate** isolate) {
   i::MemoryChunk* chunk = i::MemoryChunk::FromHeapObject(obj);
   if (chunk->owner()->identity() == i::RO_SPACE) {
@@ -177,6 +183,11 @@ bool Isolate::IsArrayBufferNeuteringIntact() {
 bool Isolate::IsArrayIteratorLookupChainIntact() {
   PropertyCell* array_iterator_cell = heap()->array_iterator_protector();
   return array_iterator_cell->value() == Smi::FromInt(kProtectorValid);
+}
+
+bool Isolate::IsStringIteratorLookupChainIntact() {
+  PropertyCell* string_iterator_cell = heap()->string_iterator_protector();
+  return string_iterator_cell->value() == Smi::FromInt(kProtectorValid);
 }
 
 }  // namespace internal

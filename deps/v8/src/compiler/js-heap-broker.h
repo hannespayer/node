@@ -7,8 +7,10 @@
 
 #include "src/base/compiler-specific.h"
 #include "src/base/optional.h"
+#include "src/compiler/refs-map.h"
 #include "src/globals.h"
 #include "src/objects.h"
+#include "src/objects/builtin-function-id.h"
 #include "src/zone/zone-containers.h"
 
 namespace v8 {
@@ -50,6 +52,7 @@ enum class OddballType : uint8_t {
   V(AllocationSite)                \
   V(Cell)                          \
   V(Code)                          \
+  V(DescriptorArray)               \
   V(FeedbackVector)                \
   V(FixedArrayBase)                \
   V(HeapNumber)                    \
@@ -73,7 +76,10 @@ HEAP_BROKER_OBJECT_LIST(FORWARD_DECL)
 class ObjectRef {
  public:
   ObjectRef(JSHeapBroker* broker, Handle<Object> object);
-  explicit ObjectRef(ObjectData* data) : data_(data) { CHECK_NOT_NULL(data_); }
+  ObjectRef(JSHeapBroker* broker, ObjectData* data)
+      : broker_(broker), data_(data) {
+    CHECK_NOT_NULL(data_);
+  }
 
   bool equals(const ObjectRef& other) const;
 
@@ -106,6 +112,7 @@ class ObjectRef {
   ObjectData* data() const;
 
  private:
+  JSHeapBroker* broker_;
   ObjectData* data_;
 };
 
@@ -235,6 +242,7 @@ class ContextRef : public HeapObjectRef {
   V(JSFunction, promise_function)             \
   V(Map, fast_aliased_arguments_map)          \
   V(Map, initial_array_iterator_map)          \
+  V(Map, initial_string_iterator_map)         \
   V(Map, iterator_result_map)                 \
   V(Map, js_array_holey_double_elements_map)  \
   V(Map, js_array_holey_elements_map)         \
@@ -250,7 +258,6 @@ class ContextRef : public HeapObjectRef {
   V(Map, sloppy_arguments_map)                \
   V(Map, slow_object_with_null_prototype_map) \
   V(Map, strict_arguments_map)                \
-  V(Map, string_iterator_map)                 \
   V(ScriptContextTable, script_context_table)
 
 class NativeContextRef : public ContextRef {
@@ -282,6 +289,11 @@ class ScriptContextTableRef : public HeapObjectRef {
   };
 
   base::Optional<LookupResult> lookup(const NameRef& name) const;
+};
+
+class DescriptorArrayRef : public HeapObjectRef {
+ public:
+  using HeapObjectRef::HeapObjectRef;
 };
 
 class FeedbackVectorRef : public HeapObjectRef {
@@ -345,7 +357,7 @@ class MapRef : public HeapObjectRef {
   base::Optional<MapRef> AsElementsKind(ElementsKind kind) const;
 
   // Concerning the underlying instance_descriptors:
-  void SerializeDescriptors();
+  void SerializeOwnDescriptors();
   MapRef FindFieldOwner(int descriptor_index) const;
   PropertyDetails GetPropertyDetails(int descriptor_index) const;
   NameRef GetPropertyKey(int descriptor_index) const;
@@ -462,21 +474,24 @@ class InternalizedStringRef : public StringRef {
   using StringRef::StringRef;
 };
 
+class PerIsolateCompilerCache;
+
 class V8_EXPORT_PRIVATE JSHeapBroker : public NON_EXPORTED_BASE(ZoneObject) {
  public:
-  JSHeapBroker(Isolate* isolate, Zone* zone);
+  JSHeapBroker(Isolate* isolate, Zone* broker_zone);
+  void SetNativeContextRef();
   void SerializeStandardObjects();
 
   Isolate* isolate() const { return isolate_; }
-  Zone* zone() const { return zone_; }
+  Zone* zone() const { return current_zone_; }
   NativeContextRef native_context() const { return native_context_.value(); }
+  PerIsolateCompilerCache* compiler_cache() const { return compiler_cache_; }
 
-  enum BrokerMode { kDisabled, kSerializing, kSerialized };
+  enum BrokerMode { kDisabled, kSerializing, kSerialized, kRetired };
   BrokerMode mode() const { return mode_; }
-  void StopSerializing() {
-    CHECK_EQ(mode_, kSerializing);
-    mode_ = kSerialized;
-  }
+  void StartSerializing();
+  void StopSerializing();
+  void Retire();
   bool SerializingAllowed() const;
 
   // Returns nullptr iff handle unknown.
@@ -495,14 +510,20 @@ class V8_EXPORT_PRIVATE JSHeapBroker : public NON_EXPORTED_BASE(ZoneObject) {
   friend class ObjectRef;
   friend class ObjectData;
 
-  Isolate* const isolate_;
-  Zone* const zone_;
-  base::Optional<NativeContextRef> native_context_;
-  ZoneUnorderedMap<Address, ObjectData*> refs_;
-  BrokerMode mode_;
-  unsigned tracing_indentation_ = 0;
+  void SerializeShareableObjects();
 
-  static const size_t kInitialRefsBucketCount = 1000;
+  Isolate* const isolate_;
+  Zone* const broker_zone_;
+  Zone* current_zone_;
+  base::Optional<NativeContextRef> native_context_;
+  RefsMap* refs_;
+
+  BrokerMode mode_ = kDisabled;
+  unsigned tracing_indentation_ = 0;
+  PerIsolateCompilerCache* compiler_cache_;
+
+  static const size_t kMinimalRefsBucketCount = 8;     // must be power of 2
+  static const size_t kInitialRefsBucketCount = 1024;  // must be power of 2
 };
 
 #define ASSIGN_RETURN_NO_CHANGE_IF_DATA_MISSING(something_var,          \

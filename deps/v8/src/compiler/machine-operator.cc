@@ -81,8 +81,7 @@ StackSlotRepresentation const& StackSlotRepresentationOf(Operator const* op) {
 
 MachineRepresentation AtomicStoreRepresentationOf(Operator const* op) {
   DCHECK(IrOpcode::kWord32AtomicStore == op->opcode() ||
-         IrOpcode::kWord64AtomicStore == op->opcode() ||
-         IrOpcode::kWord32AtomicPairStore == op->opcode());
+         IrOpcode::kWord64AtomicStore == op->opcode());
   return OpParameter<MachineRepresentation>(op);
 }
 
@@ -344,8 +343,8 @@ MachineType AtomicOpType(Operator const* op) {
   V(Word64Ctz, Operator::kNoProperties, 1, 0, 1)            \
   V(Word32ReverseBits, Operator::kNoProperties, 1, 0, 1)    \
   V(Word64ReverseBits, Operator::kNoProperties, 1, 0, 1)    \
-  V(Int32AbsWithOverflow, Operator::kNoProperties, 1, 0, 1) \
-  V(Int64AbsWithOverflow, Operator::kNoProperties, 1, 0, 1) \
+  V(Int32AbsWithOverflow, Operator::kNoProperties, 1, 0, 2) \
+  V(Int64AbsWithOverflow, Operator::kNoProperties, 1, 0, 2) \
   V(Word32Popcnt, Operator::kNoProperties, 1, 0, 1)         \
   V(Word64Popcnt, Operator::kNoProperties, 1, 0, 1)         \
   V(Float32RoundDown, Operator::kNoProperties, 1, 0, 1)     \

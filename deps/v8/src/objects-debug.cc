@@ -45,6 +45,7 @@
 #include "src/objects/microtask-queue-inl.h"
 #include "src/objects/module-inl.h"
 #include "src/objects/promise-inl.h"
+#include "src/objects/stack-frame-info-inl.h"
 #include "src/ostreams.h"
 #include "src/regexp/jsregexp.h"
 #include "src/transitions.h"
@@ -121,7 +122,7 @@ void HeapObject::HeapObjectVerify(Isolate* isolate) {
   CHECK(map()->IsMap());
 
   switch (map()->instance_type()) {
-#define STRING_TYPE_CASE(TYPE, size, name, camel_name) case TYPE:
+#define STRING_TYPE_CASE(TYPE, size, name, CamelName) case TYPE:
     STRING_TYPE_LIST(STRING_TYPE_CASE)
 #undef STRING_TYPE_CASE
     String::cast(this)->StringVerify(isolate);
@@ -161,6 +162,7 @@ void HeapObject::HeapObjectVerify(Isolate* isolate) {
     case FIXED_ARRAY_TYPE:
     case SCOPE_INFO_TYPE:
     case SCRIPT_CONTEXT_TABLE_TYPE:
+    case AWAIT_CONTEXT_TYPE:
     case BLOCK_CONTEXT_TYPE:
     case CATCH_CONTEXT_TYPE:
     case DEBUG_EVALUATE_CONTEXT_TYPE:
@@ -389,8 +391,8 @@ void HeapObject::HeapObjectVerify(Isolate* isolate) {
       break;
 #endif  // V8_INTL_SUPPORT
 
-#define MAKE_STRUCT_CASE(NAME, Name, name)   \
-  case NAME##_TYPE:                          \
+#define MAKE_STRUCT_CASE(TYPE, Name, name)   \
+  case TYPE:                                 \
     Name::cast(this)->Name##Verify(isolate); \
     break;
       STRUCT_LIST(MAKE_STRUCT_CASE)
@@ -1905,8 +1907,7 @@ void JSCollator::JSCollatorVerify(Isolate* isolate) {
 
 void JSDateTimeFormat::JSDateTimeFormatVerify(Isolate* isolate) {
   JSObjectVerify(isolate);
-  VerifyObjectField(isolate, kLocaleOffset);
-  VerifyObjectField(isolate, kNumberingSystemOffset);
+  VerifyObjectField(isolate, kICULocaleOffset);
   VerifyObjectField(isolate, kICUSimpleDateFormatOffset);
   VerifyObjectField(isolate, kBoundFormatOffset);
 }
@@ -1914,7 +1915,7 @@ void JSDateTimeFormat::JSDateTimeFormatVerify(Isolate* isolate) {
 void JSListFormat::JSListFormatVerify(Isolate* isolate) {
   JSObjectVerify(isolate);
   VerifyObjectField(isolate, kLocaleOffset);
-  VerifyObjectField(isolate, kFormatterOffset);
+  VerifyObjectField(isolate, kICUFormatterOffset);
   VerifyObjectField(isolate, kFlagsOffset);
 }
 
@@ -1955,7 +1956,7 @@ void JSPluralRules::JSPluralRulesVerify(Isolate* isolate) {
 void JSRelativeTimeFormat::JSRelativeTimeFormatVerify(Isolate* isolate) {
   JSObjectVerify(isolate);
   VerifyObjectField(isolate, kLocaleOffset);
-  VerifyObjectField(isolate, kFormatterOffset);
+  VerifyObjectField(isolate, kICUFormatterOffset);
   VerifyObjectField(isolate, kFlagsOffset);
 }
 #endif  // V8_INTL_SUPPORT
@@ -2160,9 +2161,8 @@ bool CanLeak(Object* obj, Heap* heap) {
   if (obj->IsContext()) return true;
   if (obj->IsMap()) {
     Map* map = Map::cast(obj);
-    for (int i = 0; i < static_cast<int>(RootIndex::kStrongRootListLength);
-         i++) {
-      RootIndex root_index = static_cast<RootIndex>(i);
+    for (RootIndex root_index = RootIndex::kFirstStrongRoot;
+         root_index <= RootIndex::kLastStrongRoot; ++root_index) {
       if (map == heap->root(root_index)) return false;
     }
     return true;

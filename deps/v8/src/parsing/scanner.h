@@ -21,13 +21,13 @@
 namespace v8 {
 namespace internal {
 
-
 class AstRawString;
 class AstValueFactory;
 class DuplicateFinder;
 class ExternalOneByteString;
 class ExternalTwoByteString;
 class ParserRecorder;
+class RuntimeCallStats;
 class UnicodeCache;
 
 // ---------------------------------------------------------------------
@@ -120,6 +120,11 @@ class Utf16CharacterStream {
   // Returns true if the stream could access the V8 heap after construction.
   virtual bool can_access_heap() const = 0;
 
+  RuntimeCallStats* runtime_call_stats() const { return runtime_call_stats_; }
+  void set_runtime_call_stats(RuntimeCallStats* runtime_call_stats) {
+    runtime_call_stats_ = runtime_call_stats;
+  }
+
  protected:
   Utf16CharacterStream(const uint16_t* buffer_start,
                        const uint16_t* buffer_cursor,
@@ -180,6 +185,7 @@ class Utf16CharacterStream {
   const uint16_t* buffer_cursor_;
   const uint16_t* buffer_end_;
   size_t buffer_pos_;
+  RuntimeCallStats* runtime_call_stats_;
 };
 
 // ----------------------------------------------------------------------------
@@ -384,8 +390,6 @@ class Scanner {
 
   bool FoundHtmlComment() const { return found_html_comment_; }
 
-  bool allow_harmony_bigint() const { return allow_harmony_bigint_; }
-  void set_allow_harmony_bigint(bool allow) { allow_harmony_bigint_ = allow; }
   bool allow_harmony_private_fields() const {
     return allow_harmony_private_fields_;
   }
@@ -807,7 +811,6 @@ class Scanner {
   bool found_html_comment_;
 
   // Harmony flags to allow ESNext features.
-  bool allow_harmony_bigint_;
   bool allow_harmony_private_fields_;
   bool allow_harmony_numeric_separator_;
 

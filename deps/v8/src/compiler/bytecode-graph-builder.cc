@@ -516,7 +516,7 @@ Node* BytecodeGraphBuilder::Environment::Checkpoint(
 BytecodeGraphBuilder::BytecodeGraphBuilder(
     Zone* local_zone, Handle<SharedFunctionInfo> shared_info,
     Handle<FeedbackVector> feedback_vector, BailoutId osr_offset,
-    JSGraph* jsgraph, CallFrequency invocation_frequency,
+    JSGraph* jsgraph, CallFrequency& invocation_frequency,
     SourcePositionTable* source_positions, Handle<Context> native_context,
     int inlining_id, JSTypeHintLowering::Flags flags, bool stack_check,
     bool analyze_environment_liveness)
@@ -1339,6 +1339,17 @@ void BytecodeGraphBuilder::VisitLdaNamedProperty() {
   environment()->BindAccumulator(node, Environment::kAttachFrameState);
 }
 
+void BytecodeGraphBuilder::VisitLdaNamedPropertyNoFeedback() {
+  PrepareEagerCheckpoint();
+  Node* object =
+      environment()->LookupRegister(bytecode_iterator().GetRegisterOperand(0));
+  Handle<Name> name(
+      Name::cast(bytecode_iterator().GetConstantForIndexOperand(1)), isolate());
+  const Operator* op = javascript()->LoadNamed(name, VectorSlotPair());
+  Node* node = NewNode(op, object);
+  environment()->BindAccumulator(node, Environment::kAttachFrameState);
+}
+
 void BytecodeGraphBuilder::VisitLdaKeyedProperty() {
   PrepareEagerCheckpoint();
   Node* key = environment()->LookupAccumulator();
@@ -1400,6 +1411,21 @@ void BytecodeGraphBuilder::BuildNamedStore(StoreMode store_mode) {
 
 void BytecodeGraphBuilder::VisitStaNamedProperty() {
   BuildNamedStore(StoreMode::kNormal);
+}
+
+void BytecodeGraphBuilder::VisitStaNamedPropertyNoFeedback() {
+  PrepareEagerCheckpoint();
+  Node* value = environment()->LookupAccumulator();
+  Node* object =
+      environment()->LookupRegister(bytecode_iterator().GetRegisterOperand(0));
+  Handle<Name> name(
+      Name::cast(bytecode_iterator().GetConstantForIndexOperand(1)), isolate());
+  LanguageMode language_mode =
+      static_cast<LanguageMode>(bytecode_iterator().GetFlagOperand(2));
+  const Operator* op =
+      javascript()->StoreNamed(language_mode, name, VectorSlotPair());
+  Node* node = NewNode(op, object, value);
+  environment()->RecordAfterState(node, Environment::kAttachFrameState);
 }
 
 void BytecodeGraphBuilder::VisitStaNamedOwnProperty() {
@@ -1791,19 +1817,33 @@ void BytecodeGraphBuilder::VisitCallAnyReceiver() {
 }
 
 void BytecodeGraphBuilder::VisitCallNoFeedback() {
-  PrepareEagerCheckpoint();
-  // CallNoFeedback is emitted only for one-shot code. Normally the compiler
-  // will not have to optimize one-shot code. But when the --always-opt or
-  // --stress-opt flags are set compiler is forced to optimize one-shot code.
-  // Emiting SoftDeopt to prevent compiler from inlining CallNoFeedback in
-  // one-shot.
-  Node* effect = environment()->GetEffectDependency();
-  Node* control = environment()->GetControlDependency();
+  DCHECK_EQ(interpreter::Bytecodes::GetReceiverMode(
+                bytecode_iterator().current_bytecode()),
+            ConvertReceiverMode::kAny);
 
-  JSTypeHintLowering::LoweringResult deoptimize =
-      type_hint_lowering().BuildSoftDeopt(effect, control,
-                                          DeoptimizeReason::kDeoptimizeNow);
-  ApplyEarlyReduction(deoptimize);
+  PrepareEagerCheckpoint();
+  Node* callee =
+      environment()->LookupRegister(bytecode_iterator().GetRegisterOperand(0));
+
+  interpreter::Register first_reg = bytecode_iterator().GetRegisterOperand(1);
+  size_t reg_count = bytecode_iterator().GetRegisterCountOperand(2);
+
+  // The receiver is the first register, followed by the arguments in the
+  // consecutive registers.
+  int arg_count = static_cast<int>(reg_count) - 1;
+  // The arity of the Call node -- includes the callee, receiver and function
+  // arguments.
+  int arity = 2 + arg_count;
+
+  // Setting call frequency to a value less than min_inlining frequency to
+  // prevent inlining of one-shot call node.
+  DCHECK(CallFrequency::kNoFeedbackCallFrequency < FLAG_min_inlining_frequency);
+  const Operator* call = javascript()->Call(
+      arity, CallFrequency(CallFrequency::kNoFeedbackCallFrequency));
+  Node* const* call_args = ProcessCallVarArgs(ConvertReceiverMode::kAny, callee,
+                                              first_reg, arg_count);
+  Node* value = ProcessCallArguments(call, call_args, arity);
+  environment()->BindAccumulator(value, Environment::kAttachFrameState);
 }
 
 void BytecodeGraphBuilder::VisitCallProperty() {

@@ -759,9 +759,10 @@ const char* V8HeapExplorer::GetSystemEntryName(HeapObject* object) {
     case ODDBALL_TYPE: return "system / Oddball";
     case ALLOCATION_SITE_TYPE:
       return "system / AllocationSite";
-#define MAKE_STRUCT_CASE(NAME, Name, name) \
-    case NAME##_TYPE: return "system / "#Name;
-  STRUCT_LIST(MAKE_STRUCT_CASE)
+#define MAKE_STRUCT_CASE(TYPE, Name, name) \
+  case TYPE:                               \
+    return "system / " #Name;
+      STRUCT_LIST(MAKE_STRUCT_CASE)
 #undef MAKE_STRUCT_CASE
     default: return "system";
   }
@@ -1039,6 +1040,22 @@ void V8HeapExplorer::ExtractEphemeronHashTableReferences(
   }
 }
 
+// These static arrays are used to prevent excessive code-size in
+// ExtractContextReferences below, which would happen if we called
+// SetInternalReference for every native context field in a macro.
+static const int native_context_indices[] = {
+#define CONTEXT_FIELD_INDEX(index, ...) Context::index,
+    NATIVE_CONTEXT_FIELDS(CONTEXT_FIELD_INDEX)
+#undef CONTEXT_FIELD_INDEX
+};
+static const char* native_context_names[] = {
+#define CONTEXT_FIELD_NAME(index, _, name) #name,
+    NATIVE_CONTEXT_FIELDS(CONTEXT_FIELD_NAME)
+#undef CONTEXT_FIELD_NAME
+};
+STATIC_ASSERT(arraysize(native_context_indices) ==
+              arraysize(native_context_names));
+
 void V8HeapExplorer::ExtractContextReferences(int entry, Context* context) {
   if (!context->IsNativeContext() && context->is_declaration_context()) {
     ScopeInfo* scope_info = context->scope_info();
@@ -1060,26 +1077,38 @@ void V8HeapExplorer::ExtractContextReferences(int entry, Context* context) {
     }
   }
 
-#define EXTRACT_CONTEXT_FIELD(index, type, name) \
-  if (Context::index < Context::FIRST_WEAK_SLOT || \
-      Context::index == Context::MAP_CACHE_INDEX) { \
-    SetInternalReference(context, entry, #name, context->get(Context::index), \
-        FixedArray::OffsetOfElementAt(Context::index)); \
-  } else { \
-    SetWeakReference(context, entry, #name, context->get(Context::index), \
-        FixedArray::OffsetOfElementAt(Context::index)); \
-  }
-  EXTRACT_CONTEXT_FIELD(SCOPE_INFO_INDEX, ScopeInfo, scope_info);
-  EXTRACT_CONTEXT_FIELD(PREVIOUS_INDEX, Context, previous);
-  EXTRACT_CONTEXT_FIELD(EXTENSION_INDEX, HeapObject, extension);
-  EXTRACT_CONTEXT_FIELD(NATIVE_CONTEXT_INDEX, Context, native_context);
+  SetInternalReference(
+      context, entry, "scope_info", context->get(Context::SCOPE_INFO_INDEX),
+      FixedArray::OffsetOfElementAt(Context::SCOPE_INFO_INDEX));
+  SetInternalReference(context, entry, "previous",
+                       context->get(Context::PREVIOUS_INDEX),
+                       FixedArray::OffsetOfElementAt(Context::PREVIOUS_INDEX));
+  SetInternalReference(context, entry, "extension",
+                       context->get(Context::EXTENSION_INDEX),
+                       FixedArray::OffsetOfElementAt(Context::EXTENSION_INDEX));
+  SetInternalReference(
+      context, entry, "native_context",
+      context->get(Context::NATIVE_CONTEXT_INDEX),
+      FixedArray::OffsetOfElementAt(Context::NATIVE_CONTEXT_INDEX));
+
   if (context->IsNativeContext()) {
     TagObject(context->normalized_map_cache(), "(context norm. map cache)");
     TagObject(context->embedder_data(), "(context data)");
-    NATIVE_CONTEXT_FIELDS(EXTRACT_CONTEXT_FIELD)
-    EXTRACT_CONTEXT_FIELD(OPTIMIZED_CODE_LIST, unused, optimized_code_list);
-    EXTRACT_CONTEXT_FIELD(DEOPTIMIZED_CODE_LIST, unused, deoptimized_code_list);
-#undef EXTRACT_CONTEXT_FIELD
+    for (size_t i = 0; i < arraysize(native_context_indices); i++) {
+      int index = native_context_indices[i];
+      const char* name = native_context_names[i];
+      SetInternalReference(context, entry, name, context->get(index),
+                           FixedArray::OffsetOfElementAt(index));
+    }
+
+    SetWeakReference(
+        context, entry, "optimized_code_list",
+        context->get(Context::OPTIMIZED_CODE_LIST),
+        FixedArray::OffsetOfElementAt(Context::OPTIMIZED_CODE_LIST));
+    SetWeakReference(
+        context, entry, "deoptimized_code_list",
+        context->get(Context::DEOPTIMIZED_CODE_LIST),
+        FixedArray::OffsetOfElementAt(Context::DEOPTIMIZED_CODE_LIST));
     STATIC_ASSERT(Context::OPTIMIZED_CODE_LIST == Context::FIRST_WEAK_SLOT);
     STATIC_ASSERT(Context::NEXT_CONTEXT_LINK + 1 ==
                   Context::NATIVE_CONTEXT_SLOTS);
@@ -1087,7 +1116,6 @@ void V8HeapExplorer::ExtractContextReferences(int entry, Context* context) {
                   Context::NATIVE_CONTEXT_SLOTS);
   }
 }
-
 
 void V8HeapExplorer::ExtractMapReferences(int entry, Map* map) {
   MaybeObject* maybe_raw_transitions_or_prototype_info = map->raw_transitions();
@@ -1850,43 +1878,25 @@ void V8HeapExplorer::SetGcSubrootReference(Root root, const char* description,
   SetUserGlobalReference(global);
 }
 
+// This static array is used to prevent excessive code-size in
+// GetStrongGcSubrootName below, which would happen if we called emplace() for
+// every root in a macro.
+static const char* root_names[] = {
+#define ROOT_NAME(type, name, CamelName) #name,
+    READ_ONLY_ROOT_LIST(ROOT_NAME) MUTABLE_ROOT_LIST(ROOT_NAME)
+#undef ROOT_NAME
+};
+STATIC_ASSERT(static_cast<uint16_t>(RootIndex::kRootListLength) ==
+              arraysize(root_names));
+
 const char* V8HeapExplorer::GetStrongGcSubrootName(Object* object) {
-  ReadOnlyRoots roots(heap_);
   if (strong_gc_subroot_names_.empty()) {
-#define NAME_ENTRY(name) strong_gc_subroot_names_.emplace(heap_->name(), #name);
-#define RO_NAME_ENTRY(name) \
-  strong_gc_subroot_names_.emplace(roots.name(), #name);
-#define ROOT_NAME(type, name, camel_name) NAME_ENTRY(name)
-    STRONG_MUTABLE_ROOT_LIST(ROOT_NAME)
-#undef ROOT_NAME
-#define ROOT_NAME(type, name, camel_name) RO_NAME_ENTRY(name)
-    STRONG_READ_ONLY_ROOT_LIST(ROOT_NAME)
-#undef ROOT_NAME
-#define STRUCT_MAP_NAME(NAME, Name, name) RO_NAME_ENTRY(name##_map)
-    STRUCT_LIST(STRUCT_MAP_NAME)
-#undef STRUCT_MAP_NAME
-#define ALLOCATION_SITE_MAP_NAME(NAME, Name, Size, name) \
-  RO_NAME_ENTRY(name##_map)
-    ALLOCATION_SITE_LIST(ALLOCATION_SITE_MAP_NAME)
-#undef ALLOCATION_SITE_MAP_NAME
-#define DATA_HANDLER_MAP_NAME(NAME, Name, Size, name) NAME_ENTRY(name##_map)
-    DATA_HANDLER_LIST(DATA_HANDLER_MAP_NAME)
-#undef DATA_HANDLER_MAP_NAME
-#define STRING_NAME(name, str) RO_NAME_ENTRY(name)
-    INTERNALIZED_STRING_LIST(STRING_NAME)
-#undef STRING_NAME
-#define SYMBOL_NAME(name) RO_NAME_ENTRY(name)
-    PRIVATE_SYMBOL_LIST(SYMBOL_NAME)
-#undef SYMBOL_NAME
-#define SYMBOL_NAME(name, description) RO_NAME_ENTRY(name)
-    PUBLIC_SYMBOL_LIST(SYMBOL_NAME)
-    WELL_KNOWN_SYMBOL_LIST(SYMBOL_NAME)
-#undef SYMBOL_NAME
-#define ACCESSOR_NAME(accessor_name, ...) NAME_ENTRY(accessor_name##_accessor)
-    ACCESSOR_INFO_LIST(ACCESSOR_NAME)
-#undef ACCESSOR_NAME
-#undef NAME_ENTRY
-#undef RO_NAME_ENTRY
+    for (uint16_t i = 0; i < static_cast<uint16_t>(RootIndex::kRootListLength);
+         i++) {
+      const char* name = root_names[i];
+      RootIndex index = static_cast<RootIndex>(i);
+      strong_gc_subroot_names_.emplace(heap_->root(index), name);
+    }
     CHECK(!strong_gc_subroot_names_.empty());
   }
   auto it = strong_gc_subroot_names_.find(object);

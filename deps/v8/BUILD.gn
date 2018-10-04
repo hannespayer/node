@@ -866,6 +866,8 @@ action("postmortem-metadata") {
     "src/objects/js-array.h",
     "src/objects/js-array-buffer-inl.h",
     "src/objects/js-array-buffer.h",
+    "src/objects/js-objects-inl.h",
+    "src/objects/js-objects.h",
     "src/objects/js-regexp-inl.h",
     "src/objects/js-regexp.h",
     "src/objects/js-regexp-string-iterator-inl.h",
@@ -1835,6 +1837,7 @@ v8_source_set("v8_base") {
     "src/compiler/operator.h",
     "src/compiler/osr.cc",
     "src/compiler/osr.h",
+    "src/compiler/per-isolate-compiler-cache.h",
     "src/compiler/persistent-map.h",
     "src/compiler/pipeline-statistics.cc",
     "src/compiler/pipeline-statistics.h",
@@ -1846,6 +1849,8 @@ v8_source_set("v8_base") {
     "src/compiler/raw-machine-assembler.h",
     "src/compiler/redundancy-elimination.cc",
     "src/compiler/redundancy-elimination.h",
+    "src/compiler/refs-map.cc",
+    "src/compiler/refs-map.h",
     "src/compiler/register-allocator-verifier.cc",
     "src/compiler/register-allocator-verifier.h",
     "src/compiler/register-allocator.cc",
@@ -2162,6 +2167,8 @@ v8_source_set("v8_base") {
     "src/macro-assembler.h",
     "src/map-updater.cc",
     "src/map-updater.h",
+    "src/math-random.cc",
+    "src/math-random.h",
     "src/maybe-handles-inl.h",
     "src/maybe-handles.h",
     "src/messages.cc",
@@ -2180,6 +2187,7 @@ v8_source_set("v8_base") {
     "src/objects/arguments.h",
     "src/objects/bigint.cc",
     "src/objects/bigint.h",
+    "src/objects/builtin-function-id.h",
     "src/objects/code-inl.h",
     "src/objects/code.h",
     "src/objects/compilation-cache-inl.h",
@@ -2225,6 +2233,8 @@ v8_source_set("v8_base") {
     "src/objects/js-number-format-inl.h",
     "src/objects/js-number-format.cc",
     "src/objects/js-number-format.h",
+    "src/objects/js-objects-inl.h",
+    "src/objects/js-objects.h",
     "src/objects/js-plural-rules-inl.h",
     "src/objects/js-plural-rules.cc",
     "src/objects/js-plural-rules.h",
@@ -2265,6 +2275,8 @@ v8_source_set("v8_base") {
     "src/objects/ordered-hash-table.h",
     "src/objects/promise-inl.h",
     "src/objects/promise.h",
+    "src/objects/property-array-inl.h",
+    "src/objects/property-array.h",
     "src/objects/property-descriptor-object-inl.h",
     "src/objects/property-descriptor-object.h",
     "src/objects/prototype-info-inl.h",
@@ -2276,6 +2288,8 @@ v8_source_set("v8_base") {
     "src/objects/script.h",
     "src/objects/shared-function-info-inl.h",
     "src/objects/shared-function-info.h",
+    "src/objects/stack-frame-info-inl.h",
+    "src/objects/stack-frame-info.h",
     "src/objects/string-inl.h",
     "src/objects/string-table.h",
     "src/objects/string.h",
@@ -2381,6 +2395,7 @@ v8_source_set("v8_base") {
     "src/reloc-info.cc",
     "src/reloc-info.h",
     "src/roots-inl.h",
+    "src/roots.cc",
     "src/roots.h",
     "src/runtime-profiler.cc",
     "src/runtime-profiler.h",
@@ -2400,7 +2415,6 @@ v8_source_set("v8_base") {
     "src/runtime/runtime-interpreter.cc",
     "src/runtime/runtime-intl.cc",
     "src/runtime/runtime-literals.cc",
-    "src/runtime/runtime-maths.cc",
     "src/runtime/runtime-module.cc",
     "src/runtime/runtime-numbers.cc",
     "src/runtime/runtime-object.cc",
@@ -2962,6 +2976,15 @@ v8_source_set("v8_base") {
   if (v8_postmortem_support) {
     sources += [ "$target_gen_dir/debug-support.cc" ]
     deps += [ ":postmortem-metadata" ]
+  }
+
+  # Platforms that don't have CAS support need to link atomic library
+  # to implement atomic memory access
+  if (v8_current_cpu == "mips" || v8_current_cpu == "mipsel" ||
+      v8_current_cpu == "mips64" || v8_current_cpu == "mips64el" ||
+      v8_current_cpu == "ppc" || v8_current_cpu == "ppc64" ||
+      v8_current_cpu == "s390" || v8_current_cpu == "s390x") {
+    libs = [ "atomic" ]
   }
 }
 

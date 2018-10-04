@@ -37,6 +37,7 @@
 #include "src/heap/factory.h"
 #include "src/isolate.h"
 #include "src/objects.h"
+#include "src/register-configuration.h"
 #include "src/utils.h"
 #include "src/v8.h"
 #include "src/zone/accounting-allocator.h"
@@ -49,6 +50,13 @@ class RandomNumberGenerator;
 }  // namespace base
 
 namespace internal {
+
+#if defined(V8_TARGET_ARCH_IA32) && defined(V8_EMBEDDED_BUILTINS)
+// TODO(v8:6666): Fold into Default config once root is fully supported.
+const auto GetRegConfig = RegisterConfiguration::PreserveRootIA32;
+#else
+const auto GetRegConfig = RegisterConfiguration::Default;
+#endif
 
 class HandleScope;
 class Zone;
@@ -507,9 +515,7 @@ static inline void ExpectInt32(const char* code, int expected) {
 static inline void ExpectBoolean(const char* code, bool expected) {
   v8::Local<v8::Value> result = CompileRun(code);
   CHECK(result->IsBoolean());
-  CHECK_EQ(expected,
-           result->BooleanValue(v8::Isolate::GetCurrent()->GetCurrentContext())
-               .FromJust());
+  CHECK_EQ(expected, result->BooleanValue(v8::Isolate::GetCurrent()));
 }
 
 

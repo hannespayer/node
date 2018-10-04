@@ -1354,7 +1354,13 @@ namespace {
 void Generate_ContinueToBuiltinHelper(MacroAssembler* masm,
                                       bool java_script_builtin,
                                       bool with_result) {
+#ifdef V8_EMBEDDED_BUILTINS
+  // TODO(v8:6666): Fold into Default config once root is fully supported.
+  const RegisterConfiguration* config(
+      RegisterConfiguration::PreserveRootIA32());
+#else
   const RegisterConfiguration* config(RegisterConfiguration::Default());
+#endif
   int allocatable_register_count = config->num_allocatable_general_registers();
   if (with_result) {
     // Overwrite the hole inserted by the deoptimizer with the return value from
@@ -1384,20 +1390,36 @@ void Generate_ContinueToBuiltinHelper(MacroAssembler* masm,
 }  // namespace
 
 void Builtins::Generate_ContinueToCodeStubBuiltin(MacroAssembler* masm) {
+#ifdef V8_EMBEDDED_BUILTINS
+  // TODO(v8:6666): Remove the ifdef once root is preserved by default.
+  Assembler::SupportsRootRegisterScope supports_root_register(masm);
+#endif
   Generate_ContinueToBuiltinHelper(masm, false, false);
 }
 
 void Builtins::Generate_ContinueToCodeStubBuiltinWithResult(
     MacroAssembler* masm) {
+#ifdef V8_EMBEDDED_BUILTINS
+  // TODO(v8:6666): Remove the ifdef once root is preserved by default.
+  Assembler::SupportsRootRegisterScope supports_root_register(masm);
+#endif
   Generate_ContinueToBuiltinHelper(masm, false, true);
 }
 
 void Builtins::Generate_ContinueToJavaScriptBuiltin(MacroAssembler* masm) {
+#ifdef V8_EMBEDDED_BUILTINS
+  // TODO(v8:6666): Remove the ifdef once root is preserved by default.
+  Assembler::SupportsRootRegisterScope supports_root_register(masm);
+#endif
   Generate_ContinueToBuiltinHelper(masm, true, false);
 }
 
 void Builtins::Generate_ContinueToJavaScriptBuiltinWithResult(
     MacroAssembler* masm) {
+#ifdef V8_EMBEDDED_BUILTINS
+  // TODO(v8:6666): Remove the ifdef once root is preserved by default.
+  Assembler::SupportsRootRegisterScope supports_root_register(masm);
+#endif
   Generate_ContinueToBuiltinHelper(masm, true, true);
 }
 
@@ -1427,7 +1449,7 @@ void Builtins::Generate_FunctionPrototypeApply(MacroAssembler* masm) {
   //  -- esp[12] : receiver
   // -----------------------------------
 
-  // 1. Load receiver into edi, argArray into ebx (if present), remove all
+  // 1. Load receiver into xmm0, argArray into edx (if present), remove all
   // arguments from the stack (including the receiver), and push thisArg (if
   // present) instead.
   {
@@ -1457,7 +1479,7 @@ void Builtins::Generate_FunctionPrototypeApply(MacroAssembler* masm) {
   }
 
   // ----------- S t a t e -------------
-  //  -- ebx    : argArray
+  //  -- edx    : argArray
   //  -- edi    : receiver
   //  -- esp[0] : return address
   //  -- esp[4] : thisArg

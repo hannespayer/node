@@ -31,6 +31,7 @@
 #include "src/objects/module-inl.h"
 #include "src/objects/promise-inl.h"
 #include "src/objects/scope-info.h"
+#include "src/objects/stack-frame-info-inl.h"
 #include "src/unicode-cache.h"
 #include "src/unicode-decoder.h"
 
@@ -1308,7 +1309,7 @@ Handle<ExternalOneByteString> Factory::NewNativeSourceString(
 }
 
 Handle<JSStringIterator> Factory::NewJSStringIterator(Handle<String> string) {
-  Handle<Map> map(isolate()->native_context()->string_iterator_map(),
+  Handle<Map> map(isolate()->native_context()->initial_string_iterator_map(),
                   isolate());
   Handle<String> flat_string = String::Flatten(isolate(), string);
   Handle<JSStringIterator> iterator =
@@ -1493,8 +1494,8 @@ Handle<Context> Factory::NewBuiltinContext(Handle<NativeContext> native_context,
 Handle<Struct> Factory::NewStruct(InstanceType type, PretenureFlag pretenure) {
   Map* map;
   switch (type) {
-#define MAKE_CASE(NAME, Name, name) \
-  case NAME##_TYPE:                 \
+#define MAKE_CASE(TYPE, Name, name) \
+  case TYPE:                        \
     map = *name##_map();            \
     break;
     STRUCT_LIST(MAKE_CASE)
@@ -1695,7 +1696,8 @@ Handle<FixedTypedArrayBase> Factory::NewFixedTypedArrayWithExternalPointer(
   DCHECK(0 <= length && length <= Smi::kMaxValue);
   int size = FixedTypedArrayBase::kHeaderSize;
   HeapObject* result = AllocateRawWithImmortalMap(
-      size, pretenure, isolate()->heap()->MapForFixedTypedArray(array_type));
+      size, pretenure,
+      ReadOnlyRoots(isolate()).MapForFixedTypedArray(array_type));
   Handle<FixedTypedArrayBase> elements(FixedTypedArrayBase::cast(result),
                                        isolate());
   elements->set_base_pointer(Smi::kZero, SKIP_WRITE_BARRIER);
@@ -1712,7 +1714,7 @@ Handle<FixedTypedArrayBase> Factory::NewFixedTypedArray(
   CHECK(byte_length <= kMaxInt - FixedTypedArrayBase::kDataOffset);
   size_t size =
       OBJECT_POINTER_ALIGN(byte_length + FixedTypedArrayBase::kDataOffset);
-  Map* map = isolate()->heap()->MapForFixedTypedArray(array_type);
+  Map* map = ReadOnlyRoots(isolate()).MapForFixedTypedArray(array_type);
   AllocationAlignment alignment =
       array_type == kExternalFloat64Array ? kDoubleAligned : kWordAligned;
   HeapObject* object = AllocateRawWithImmortalMap(static_cast<int>(size),
@@ -3100,26 +3102,6 @@ Handle<JSSet> Factory::NewJSSet() {
   Handle<JSSet> js_set = Handle<JSSet>::cast(NewJSObjectFromMap(map));
   JSSet::Initialize(js_set, isolate());
   return js_set;
-}
-
-Handle<JSMapIterator> Factory::NewJSMapIterator(Handle<Map> map,
-                                                Handle<OrderedHashMap> table,
-                                                int index) {
-  Handle<JSMapIterator> result =
-      Handle<JSMapIterator>::cast(NewJSObjectFromMap(map));
-  result->set_table(*table);
-  result->set_index(Smi::FromInt(index));
-  return result;
-}
-
-Handle<JSSetIterator> Factory::NewJSSetIterator(Handle<Map> map,
-                                                Handle<OrderedHashSet> table,
-                                                int index) {
-  Handle<JSSetIterator> result =
-      Handle<JSSetIterator>::cast(NewJSObjectFromMap(map));
-  result->set_table(*table);
-  result->set_index(Smi::FromInt(index));
-  return result;
 }
 
 void Factory::TypeAndSizeForElementsKind(ElementsKind kind,

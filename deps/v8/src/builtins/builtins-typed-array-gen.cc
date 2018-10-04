@@ -32,12 +32,12 @@ TNode<Map> TypedArrayBuiltinsAssembler::LoadMapForType(
   TVARIABLE(Map, var_typed_map);
   TNode<Map> array_map = LoadMap(array);
   TNode<Int32T> elements_kind = LoadMapElementsKind(array_map);
+  ReadOnlyRoots roots(isolate());
 
   DispatchTypedArrayByElementsKind(
       elements_kind,
       [&](ElementsKind kind, int size, int typed_array_fun_index) {
-        Handle<Map> map(isolate()->heap()->MapForFixedTypedArray(kind),
-                        isolate());
+        Handle<Map> map(roots.MapForFixedTypedArray(kind), isolate());
         var_typed_map = HeapConstant(map);
       });
 
@@ -149,9 +149,6 @@ TF_BUILTIN(TypedArrayInitialize, TypedArrayBuiltinsAssembler) {
 
   // SmiMul returns a heap number in case of Smi overflow.
   TNode<Number> byte_length = SmiMul(length, element_size);
-
-  SetupTypedArray(holder, length, ChangeNonnegativeNumberToUintPtr(byte_offset),
-                  ChangeNonnegativeNumberToUintPtr(byte_length));
 
   TNode<Map> fixed_typed_map = LoadMapForType(holder);
 
@@ -311,6 +308,8 @@ TF_BUILTIN(TypedArrayInitialize, TypedArrayBuiltinsAssembler) {
   }
 
   BIND(&done);
+  SetupTypedArray(holder, length, ChangeNonnegativeNumberToUintPtr(byte_offset),
+                  ChangeNonnegativeNumberToUintPtr(byte_length));
   Return(UndefinedConstant());
 }
 

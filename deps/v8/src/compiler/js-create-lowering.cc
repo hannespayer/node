@@ -475,7 +475,8 @@ Reduction JSCreateLowering::ReduceJSCreateGeneratorObject(Node* node) {
 // Constructs an array with a variable {length} when no upper bound
 // is known for the capacity.
 Reduction JSCreateLowering::ReduceNewArray(
-    Node* node, Node* length, MapRef initial_map, PretenureFlag pretenure,
+    Node* node, Node* length, MapRef initial_map, ElementsKind elements_kind,
+    PretenureFlag pretenure,
     const SlackTrackingPrediction& slack_tracking_prediction) {
   DCHECK_EQ(IrOpcode::kJSCreateArray, node->opcode());
   Node* effect = NodeProperties::GetEffectInput(node);
@@ -484,8 +485,8 @@ Reduction JSCreateLowering::ReduceNewArray(
   // Constructing an Array via new Array(N) where N is an unsigned
   // integer, always creates a holey backing store.
   ASSIGN_RETURN_NO_CHANGE_IF_DATA_MISSING(
-      initial_map, initial_map.AsElementsKind(
-                       GetHoleyElementsKind(initial_map.elements_kind())));
+      initial_map,
+      initial_map.AsElementsKind(GetHoleyElementsKind(elements_kind)));
 
   // Check that the {limit} is an unsigned integer in the valid range.
   // This has to be kept in sync with src/runtime/runtime-array.cc,
@@ -524,7 +525,7 @@ Reduction JSCreateLowering::ReduceNewArray(
 // upper bound is known for the {capacity}.
 Reduction JSCreateLowering::ReduceNewArray(
     Node* node, Node* length, int capacity, MapRef initial_map,
-    PretenureFlag pretenure,
+    ElementsKind elements_kind, PretenureFlag pretenure,
     const SlackTrackingPrediction& slack_tracking_prediction) {
   DCHECK(node->opcode() == IrOpcode::kJSCreateArray ||
          node->opcode() == IrOpcode::kJSCreateEmptyLiteralArray);
@@ -532,12 +533,11 @@ Reduction JSCreateLowering::ReduceNewArray(
   Node* control = NodeProperties::GetControlInput(node);
 
   // Determine the appropriate elements kind.
-  ElementsKind elements_kind = initial_map.elements_kind();
   if (NodeProperties::GetType(length).Max() > 0.0) {
     elements_kind = GetHoleyElementsKind(elements_kind);
-    ASSIGN_RETURN_NO_CHANGE_IF_DATA_MISSING(
-        initial_map, initial_map.AsElementsKind(elements_kind));
   }
+  ASSIGN_RETURN_NO_CHANGE_IF_DATA_MISSING(
+      initial_map, initial_map.AsElementsKind(elements_kind));
   DCHECK(IsFastElementsKind(elements_kind));
 
   // Setup elements and properties.
@@ -569,15 +569,16 @@ Reduction JSCreateLowering::ReduceNewArray(
 
 Reduction JSCreateLowering::ReduceNewArray(
     Node* node, std::vector<Node*> values, MapRef initial_map,
-    PretenureFlag pretenure,
+    ElementsKind elements_kind, PretenureFlag pretenure,
     const SlackTrackingPrediction& slack_tracking_prediction) {
   DCHECK_EQ(IrOpcode::kJSCreateArray, node->opcode());
   Node* effect = NodeProperties::GetEffectInput(node);
   Node* control = NodeProperties::GetControlInput(node);
 
   // Determine the appropriate elements kind.
-  ElementsKind elements_kind = initial_map.elements_kind();
   DCHECK(IsFastElementsKind(elements_kind));
+  ASSIGN_RETURN_NO_CHANGE_IF_DATA_MISSING(
+      initial_map, initial_map.AsElementsKind(elements_kind));
 
   // Check {values} based on the {elements_kind}. These checks are guarded
   // by the {elements_kind} feedback on the {site}, so it's safe to just
@@ -624,68 +625,6 @@ Reduction JSCreateLowering::ReduceNewArray(
   return Changed(node);
 }
 
-Reduction JSCreateLowering::ReduceNewArrayToStubCall(
-    Node* node, base::Optional<AllocationSiteRef> site) {
-  CreateArrayParameters const& p = CreateArrayParametersOf(node->op());
-  int const arity = static_cast<int>(p.arity());
-  Node* target = NodeProperties::GetValueInput(node, 0);
-  Node* new_target = NodeProperties::GetValueInput(node, 1);
-  Type new_target_type = NodeProperties::GetType(new_target);
-  Node* type_info =
-      site ? jsgraph()->Constant(*site) : jsgraph()->UndefinedConstant();
-
-  ElementsKind elements_kind =
-      site ? site->GetElementsKind() : GetInitialFastElementsKind();
-  AllocationSiteOverrideMode override_mode =
-      (!site || AllocationSite::ShouldTrack(elements_kind))
-          ? DISABLE_ALLOCATION_SITES
-          : DONT_OVERRIDE;
-
-  // The Array constructor can only trigger an observable side-effect
-  // if the new.target may be a proxy.
-  Operator::Properties const properties =
-      (new_target != target || new_target_type.Maybe(Type::Proxy()))
-          ? Operator::kNoDeopt
-          : Operator::kNoDeopt | Operator::kNoWrite;
-
-  if (arity == 0) {
-    Callable callable = CodeFactory::ArrayNoArgumentConstructor(
-        isolate(), elements_kind, override_mode);
-    auto call_descriptor = Linkage::GetStubCallDescriptor(
-        graph()->zone(), callable.descriptor(), arity + 1,
-        CallDescriptor::kNeedsFrameState, properties);
-    node->ReplaceInput(0, jsgraph()->HeapConstant(callable.code()));
-    node->InsertInput(graph()->zone(), 2, type_info);
-    node->InsertInput(graph()->zone(), 3, jsgraph()->Constant(arity));
-    node->InsertInput(graph()->zone(), 4, jsgraph()->UndefinedConstant());
-    NodeProperties::ChangeOp(node, common()->Call(call_descriptor));
-  } else if (arity == 1) {
-    // Require elements kind to "go holey".
-    Callable callable = CodeFactory::ArraySingleArgumentConstructor(
-        isolate(), GetHoleyElementsKind(elements_kind), override_mode);
-    auto call_descriptor = Linkage::GetStubCallDescriptor(
-        graph()->zone(), callable.descriptor(), arity + 1,
-        CallDescriptor::kNeedsFrameState, properties);
-    node->ReplaceInput(0, jsgraph()->HeapConstant(callable.code()));
-    node->InsertInput(graph()->zone(), 2, type_info);
-    node->InsertInput(graph()->zone(), 3, jsgraph()->Constant(arity));
-    node->InsertInput(graph()->zone(), 4, jsgraph()->UndefinedConstant());
-    NodeProperties::ChangeOp(node, common()->Call(call_descriptor));
-  } else {
-    DCHECK_GT(arity, 1);
-    Handle<Code> code = BUILTIN_CODE(isolate(), ArrayNArgumentsConstructor);
-    auto call_descriptor = Linkage::GetStubCallDescriptor(
-        graph()->zone(), ArrayNArgumentsConstructorDescriptor{}, arity + 1,
-        CallDescriptor::kNeedsFrameState);
-    node->ReplaceInput(0, jsgraph()->HeapConstant(code));
-    node->InsertInput(graph()->zone(), 2, type_info);
-    node->InsertInput(graph()->zone(), 3, jsgraph()->Constant(arity));
-    node->InsertInput(graph()->zone(), 4, jsgraph()->UndefinedConstant());
-    NodeProperties::ChangeOp(node, common()->Call(call_descriptor));
-  }
-  return Changed(node);
-}
-
 Reduction JSCreateLowering::ReduceJSCreateArray(Node* node) {
   DCHECK_EQ(IrOpcode::kJSCreateArray, node->opcode());
   CreateArrayParameters const& p = CreateArrayParametersOf(node->op());
@@ -725,10 +664,9 @@ Reduction JSCreateLowering::ReduceJSCreateArray(Node* node) {
       bool can_inline_call = false;
 
       // Check if we have a feedback {site} on the {node}.
+      ElementsKind elements_kind = initial_map.elements_kind();
       if (site_ref) {
-        ElementsKind elements_kind = site_ref->GetElementsKind();
-        ASSIGN_RETURN_NO_CHANGE_IF_DATA_MISSING(
-            initial_map, initial_map.AsElementsKind(elements_kind));
+        elements_kind = site_ref->GetElementsKind();
         can_inline_call = site_ref->CanInlineCall();
         pretenure = dependencies()->DependOnPretenureMode(*site_ref);
         dependencies()->DependOnElementsKind(*site_ref);
@@ -739,7 +677,8 @@ Reduction JSCreateLowering::ReduceJSCreateArray(Node* node) {
       if (arity == 0) {
         Node* length = jsgraph()->ZeroConstant();
         int capacity = JSArray::kPreallocatedArrayElements;
-        return ReduceNewArray(node, length, capacity, initial_map, pretenure,
+        return ReduceNewArray(node, length, capacity, initial_map,
+                              elements_kind, pretenure,
                               slack_tracking_prediction);
       } else if (arity == 1) {
         Node* length = NodeProperties::GetValueInput(node, 2);
@@ -747,26 +686,25 @@ Reduction JSCreateLowering::ReduceJSCreateArray(Node* node) {
         if (!length_type.Maybe(Type::Number())) {
           // Handle the single argument case, where we know that the value
           // cannot be a valid Array length.
-          ElementsKind elements_kind = initial_map.elements_kind();
           elements_kind = GetMoreGeneralElementsKind(
               elements_kind, IsHoleyElementsKind(elements_kind)
                                  ? HOLEY_ELEMENTS
                                  : PACKED_ELEMENTS);
-          ASSIGN_RETURN_NO_CHANGE_IF_DATA_MISSING(
-              initial_map, initial_map.AsElementsKind(elements_kind));
           return ReduceNewArray(node, std::vector<Node*>{length}, initial_map,
-                                pretenure, slack_tracking_prediction);
+                                elements_kind, pretenure,
+                                slack_tracking_prediction);
         }
         if (length_type.Is(Type::SignedSmall()) && length_type.Min() >= 0 &&
             length_type.Max() <= kElementLoopUnrollLimit &&
             length_type.Min() == length_type.Max()) {
           int capacity = static_cast<int>(length_type.Max());
-          return ReduceNewArray(node, length, capacity, initial_map, pretenure,
+          return ReduceNewArray(node, length, capacity, initial_map,
+                                elements_kind, pretenure,
                                 slack_tracking_prediction);
         }
         if (length_type.Maybe(Type::UnsignedSmall()) && can_inline_call) {
-          return ReduceNewArray(node, length, initial_map, pretenure,
-                                slack_tracking_prediction);
+          return ReduceNewArray(node, length, initial_map, elements_kind,
+                                pretenure, slack_tracking_prediction);
         }
       } else if (arity <= JSArray::kInitialMaxFastElementArray) {
         // Gather the values to store into the newly created array.
@@ -790,7 +728,6 @@ Reduction JSCreateLowering::ReduceJSCreateArray(Node* node) {
         }
 
         // Try to figure out the ideal elements kind statically.
-        ElementsKind elements_kind = initial_map.elements_kind();
         if (values_all_smis) {
           // Smis can be stored with any elements kind.
         } else if (values_all_numbers) {
@@ -811,18 +748,12 @@ Reduction JSCreateLowering::ReduceJSCreateArray(Node* node) {
           // we cannot inline this invocation of the Array constructor here.
           return NoChange();
         }
-        ASSIGN_RETURN_NO_CHANGE_IF_DATA_MISSING(
-            initial_map, initial_map.AsElementsKind(elements_kind));
-        return ReduceNewArray(node, values, initial_map, pretenure,
-                              slack_tracking_prediction);
+        return ReduceNewArray(node, values, initial_map, elements_kind,
+                              pretenure, slack_tracking_prediction);
       }
     }
   }
-
-  // TODO(bmeurer): Optimize the subclassing case.
-  if (target != new_target) return NoChange();
-
-  return ReduceNewArrayToStubCall(node, site_ref);
+  return NoChange();
 }
 
 Reduction JSCreateLowering::ReduceJSCreateArrayIterator(Node* node) {
@@ -1046,7 +977,8 @@ Reduction JSCreateLowering::ReduceJSCreateStringIterator(Node* node) {
   Node* string = NodeProperties::GetValueInput(node, 0);
   Node* effect = NodeProperties::GetEffectInput(node);
 
-  Node* map = jsgraph()->Constant(native_context().string_iterator_map());
+  Node* map =
+      jsgraph()->Constant(native_context().initial_string_iterator_map());
   // Allocate new iterator and attach the iterator to this string.
   AllocationBuilder a(jsgraph(), effect, graph()->start());
   a.Allocate(JSStringIterator::kSize, NOT_TENURED, Type::OtherObject());
@@ -1163,7 +1095,8 @@ Reduction JSCreateLowering::ReduceJSCreateEmptyLiteralArray(Node* node) {
     DCHECK(!initial_map.IsInobjectSlackTrackingInProgress());
     SlackTrackingPrediction slack_tracking_prediction(
         initial_map, initial_map.instance_size());
-    return ReduceNewArray(node, length, 0, initial_map, pretenure,
+    return ReduceNewArray(node, length, 0, initial_map,
+                          initial_map.elements_kind(), pretenure,
                           slack_tracking_prediction);
   }
   return NoChange();

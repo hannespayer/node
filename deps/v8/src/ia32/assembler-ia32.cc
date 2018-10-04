@@ -501,6 +501,7 @@ void Assembler::pushad() {
 
 void Assembler::popad() {
   EnsureSpace ensure_space(this);
+  AssertIsAddressable(ebx);
   EMIT(0x61);
 }
 
@@ -1102,6 +1103,7 @@ void Assembler::neg(Register dst) {
 }
 
 void Assembler::neg(Operand dst) {
+  AllowExplicitEbxAccessScope register_used_for_regcode(this);
   EnsureSpace ensure_space(this);
   EMIT(0xF7);
   emit_operand(ebx, dst);
@@ -3403,13 +3405,7 @@ void Assembler::dd(Label* label) {
 
 
 void Assembler::RecordRelocInfo(RelocInfo::Mode rmode, intptr_t data) {
-  DCHECK(!RelocInfo::IsNone(rmode));
-  if (options().disable_reloc_info_for_patching) return;
-  // Don't record external references unless the heap will be serialized.
-  if (RelocInfo::IsOnlyForSerializer(rmode) &&
-      !options().record_reloc_info_for_serialization && !emit_debug_code()) {
-    return;
-  }
+  if (!ShouldRecordRelocInfo(rmode)) return;
   RelocInfo rinfo(reinterpret_cast<Address>(pc_), rmode, data, nullptr);
   reloc_info_writer.Write(&rinfo);
 }

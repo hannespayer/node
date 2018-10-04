@@ -44,6 +44,7 @@
 #include "src/objects/js-array-inl.h"
 #include "src/objects/module-inl.h"
 #include "src/objects/promise-inl.h"
+#include "src/objects/stack-frame-info-inl.h"
 #include "src/profiler/tracing-cpu-profiler.h"
 #include "src/prototype.h"
 #include "src/regexp/regexp-stack.h"
@@ -2300,6 +2301,13 @@ void Isolate::UnregisterManagedPtrDestructor(ManagedPtrDestructor* destructor) {
   destructor->next_ = nullptr;
 }
 
+void Isolate::SetWasmEngine(std::shared_ptr<wasm::WasmEngine> engine) {
+  DCHECK_NULL(wasm_engine_);  // Only call once before {Init}.
+  wasm_engine_ = std::move(engine);
+  wasm_engine_->AddIsolate(this);
+  wasm::WasmCodeManager::InstallSamplingGCCallback(this);
+}
+
 // NOLINTNEXTLINE
 Isolate::PerIsolateThreadData::~PerIsolateThreadData() {
 #if defined(USE_SIMULATOR)
@@ -2531,8 +2539,6 @@ Isolate::Isolate()
   InitializeLoggingAndCounters();
   debug_ = new Debug(this);
 
-  tracing_cpu_profiler_.reset(new TracingCpuProfilerImpl(this));
-
   init_memcopy_functions();
 
   if (FLAG_embedded_builtins) {
@@ -2611,6 +2617,10 @@ void Isolate::Deinit() {
     optimizing_compile_dispatcher_ = nullptr;
   }
 
+  // We start with the heap tear down so that releasing managed objects does
+  // not cause a GC.
+  heap_.StartTearDown();
+
   heap_.mark_compact_collector()->EnsureSweepingCompleted();
   heap_.memory_allocator()->unmapper()->EnsureUnmappingCompleted();
 
@@ -2626,10 +2636,6 @@ void Isolate::Deinit() {
 
   FreeThreadResources();
   logger_->StopProfilerThread();
-
-  // We start with the heap tear down so that releasing managed objects does
-  // not cause a GC.
-  heap_.StartTearDown();
 
   ReleaseSharedPtrs();
 
@@ -2656,7 +2662,10 @@ void Isolate::Deinit() {
   heap_.TearDown();
   logger_->TearDown();
 
-  wasm_engine_.reset();
+  if (wasm_engine_) {
+    wasm_engine_->RemoveIsolate(this);
+    wasm_engine_.reset();
+  }
 
   if (FLAG_embedded_builtins) {
     if (DefaultEmbeddedBlob() == nullptr && embedded_blob() != nullptr) {
@@ -2677,6 +2686,10 @@ void Isolate::Deinit() {
 
   delete root_index_map_;
   root_index_map_ = nullptr;
+
+  delete compiler_zone_;
+  compiler_zone_ = nullptr;
+  compiler_cache_ = nullptr;
 
   ClearSerializerData();
 }
@@ -2953,6 +2966,7 @@ bool Isolate::Init(StartupDeserializer* des) {
   date_cache_ = new DateCache();
   heap_profiler_ = new HeapProfiler(heap());
   interpreter_ = new interpreter::Interpreter(this);
+
   compiler_dispatcher_ =
       new CompilerDispatcher(this, V8::GetCurrentPlatform(), FLAG_stack_size);
 
@@ -2973,9 +2987,9 @@ bool Isolate::Init(StartupDeserializer* des) {
 
   // Setup the wasm engine.
   if (wasm_engine_ == nullptr) {
-    wasm_engine_ = wasm::WasmEngine::GetWasmEngine();
-    wasm::WasmCodeManager::InstallSamplingGCCallback(this);
+    SetWasmEngine(wasm::WasmEngine::GetWasmEngine());
   }
+  DCHECK_NOT_NULL(wasm_engine_);
 
   deoptimizer_data_ = new DeoptimizerData(heap());
 
@@ -2995,6 +3009,10 @@ bool Isolate::Init(StartupDeserializer* des) {
   }
 
   InitializeThreadLocal();
+
+  // Profiler has to be created after ThreadLocal is initialized
+  // because it makes use of interrupts.
+  tracing_cpu_profiler_.reset(new TracingCpuProfilerImpl(this));
 
   bootstrapper_->Initialize(create_heap_objects);
 
@@ -3545,6 +3563,15 @@ void Isolate::InvalidateArrayIteratorProtector() {
       this, factory()->array_iterator_protector(),
       handle(Smi::FromInt(kProtectorInvalid), this));
   DCHECK(!IsArrayIteratorLookupChainIntact());
+}
+
+void Isolate::InvalidateStringIteratorProtector() {
+  DCHECK(factory()->string_iterator_protector()->value()->IsSmi());
+  DCHECK(IsStringIteratorLookupChainIntact());
+  PropertyCell::SetValueWithInvalidation(
+      this, factory()->string_iterator_protector(),
+      handle(Smi::FromInt(kProtectorInvalid), this));
+  DCHECK(!IsStringIteratorLookupChainIntact());
 }
 
 void Isolate::InvalidateArrayBufferNeuteringProtector() {

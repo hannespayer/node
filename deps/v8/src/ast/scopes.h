@@ -102,7 +102,6 @@ class V8_EXPORT_PRIVATE Scope : public NON_EXPORTED_BASE(ZoneObject) {
   void SetScopeName(const AstRawString* scope_name) {
     scope_name_ = scope_name;
   }
-  void set_needs_migration() { needs_migration_ = true; }
 #endif
 
   // TODO(verwaest): Is this needed on Scope?
@@ -124,8 +123,8 @@ class V8_EXPORT_PRIVATE Scope : public NON_EXPORTED_BASE(ZoneObject) {
     Scope* outer_scope_;
     Scope* top_inner_scope_;
     VariableProxy* top_unresolved_;
-    ThreadedList<Variable>::Iterator top_local_;
-    ThreadedList<Declaration>::Iterator top_decl_;
+    base::ThreadedList<Variable>::Iterator top_local_;
+    base::ThreadedList<Declaration>::Iterator top_decl_;
     const bool outer_scope_calls_eval_;
   };
 
@@ -202,9 +201,9 @@ class V8_EXPORT_PRIVATE Scope : public NON_EXPORTED_BASE(ZoneObject) {
   void DeclareCatchVariableName(const AstRawString* name);
 
   // Declarations list.
-  ThreadedList<Declaration>* declarations() { return &decls_; }
+  base::ThreadedList<Declaration>* declarations() { return &decls_; }
 
-  ThreadedList<Variable>* locals() { return &locals_; }
+  base::ThreadedList<Variable>* locals() { return &locals_; }
 
   // Create a new unresolved variable.
   VariableProxy* NewUnresolved(AstNodeFactory* factory,
@@ -523,12 +522,12 @@ class V8_EXPORT_PRIVATE Scope : public NON_EXPORTED_BASE(ZoneObject) {
   VariableMap variables_;
   // In case of non-scopeinfo-backed scopes, this contains the variables of the
   // map above in order of addition.
-  ThreadedList<Variable> locals_;
+  base::ThreadedList<Variable> locals_;
   // Unresolved variables referred to from this scope. The proxies themselves
   // form a linked list of all unresolved proxies.
-  ThreadedList<VariableProxy> unresolved_list_;
+  base::ThreadedList<VariableProxy> unresolved_list_;
   // Declarations.
-  ThreadedList<Declaration> decls_;
+  base::ThreadedList<Declaration> decls_;
 
   // Serialized scope info support.
   Handle<ScopeInfo> scope_info_;
@@ -684,6 +683,12 @@ class V8_EXPORT_PRIVATE DeclarationScope : public Scope {
   }
   bool is_being_lazily_parsed() const { return is_being_lazily_parsed_; }
 #endif
+  void set_zone(Zone* zone) {
+#ifdef DEBUG
+    needs_migration_ = true;
+#endif
+    zone_ = zone;
+  }
 
   bool ShouldEagerCompile() const;
   void set_should_eager_compile();

@@ -59,42 +59,32 @@ namespace heap {
 class HeapTester;
 }  // namespace heap
 
-class AccessCompilerData;
 class AddressToIndexHashMap;
 class AstStringConstants;
 class Bootstrapper;
 class BuiltinsConstantsTableBuilder;
 class CancelableTaskManager;
 class CodeEventDispatcher;
-class ExternalCodeEventListener;
-class CodeGenerator;
-class CodeRange;
-class CodeStubDescriptor;
 class CodeTracer;
 class CompilationCache;
 class CompilationStatistics;
 class CompilerDispatcher;
 class ContextSlotCache;
 class Counters;
-class CpuFeatures;
 class Debug;
 class DeoptimizerData;
 class DescriptorLookupCache;
-class EmptyStatement;
 class EternalHandles;
 class ExternalCallbackScope;
 class HandleScopeImplementer;
 class HeapObjectToIndexHashMap;
 class HeapProfiler;
-class InlineRuntimeFunctionsTable;
 class InnerPointerToCodeCache;
-class InstructionStream;
 class Logger;
 class MaterializedObjectStore;
 class Microtask;
 class OptimizingCompileDispatcher;
 class PromiseOnStack;
-class Redirection;
 class RegExpStack;
 class RootVisitor;
 class RuntimeProfiler;
@@ -103,10 +93,7 @@ class SetupIsolateDelegate;
 class Simulator;
 class StartupDeserializer;
 class StandardFrame;
-class StatsTable;
-class StringTracker;
 class StubCache;
-class SweeperThread;
 class ThreadManager;
 class ThreadState;
 class ThreadVisitor;  // Defined in v8threads.h
@@ -118,6 +105,10 @@ template <StateTag Tag> class VMState;
 
 namespace interpreter {
 class Interpreter;
+}
+
+namespace compiler {
+class PerIsolateCompilerCache;
 }
 
 namespace wasm {
@@ -1007,6 +998,12 @@ class Isolate : private HiddenFactory {
   }
   StackGuard* stack_guard() { return &stack_guard_; }
   Heap* heap() { return &heap_; }
+
+  // kRootRegister may be used to address any location that falls into this
+  // region. Fields outside this region are not guaranteed to live at a static
+  // offset from kRootRegister.
+  inline base::AddressRegion root_register_addressable_region();
+
   StubCache* load_stub_cache() { return load_stub_cache_; }
   StubCache* store_stub_cache() { return store_stub_cache_; }
   DeoptimizerData* deoptimizer_data() { return deoptimizer_data_; }
@@ -1236,6 +1233,18 @@ class Isolate : private HiddenFactory {
   inline bool IsStringLengthOverflowIntact();
   inline bool IsArrayIteratorLookupChainIntact();
 
+  // The StringIteratorProtector protects the original string iterating behavior
+  // for primitive strings. As long as the StringIteratorProtector is valid,
+  // iterating over a primitive string is guaranteed to be unobservable from
+  // user code and can thus be cut short. More specifically, the protector gets
+  // invalidated as soon as either String.prototype[Symbol.iterator] or
+  // String.prototype[Symbol.iterator]().next is modified. This guarantee does
+  // not apply to string objects (as opposed to primitives), since they could
+  // define their own Symbol.iterator.
+  // String.prototype itself does not need to be protected, since it is
+  // non-configurable and non-writable.
+  inline bool IsStringIteratorLookupChainIntact();
+
   // Make sure we do check for neutered array buffers.
   inline bool IsArrayBufferNeuteringIntact();
 
@@ -1276,6 +1285,7 @@ class Isolate : private HiddenFactory {
   void InvalidateIsConcatSpreadableProtector();
   void InvalidateStringLengthOverflowProtector();
   void InvalidateArrayIteratorProtector();
+  void InvalidateStringIteratorProtector();
   void InvalidateArrayBufferNeuteringProtector();
   V8_EXPORT_PRIVATE void InvalidatePromiseHookProtector();
   void InvalidatePromiseResolveProtector();
@@ -1464,6 +1474,15 @@ class Isolate : private HiddenFactory {
 
   interpreter::Interpreter* interpreter() const { return interpreter_; }
 
+  compiler::PerIsolateCompilerCache* compiler_cache() const {
+    return compiler_cache_;
+  }
+  void set_compiler_utils(compiler::PerIsolateCompilerCache* cache,
+                          Zone* zone) {
+    compiler_cache_ = cache;
+    compiler_zone_ = zone;
+  }
+
   AccountingAllocator* allocator() { return allocator_; }
 
   CompilerDispatcher* compiler_dispatcher() const {
@@ -1522,10 +1541,7 @@ class Isolate : private HiddenFactory {
   }
 
   wasm::WasmEngine* wasm_engine() const { return wasm_engine_.get(); }
-  void set_wasm_engine(std::shared_ptr<wasm::WasmEngine> engine) {
-    DCHECK_NULL(wasm_engine_);  // Only call once before {Init}.
-    wasm_engine_ = std::move(engine);
-  }
+  void SetWasmEngine(std::shared_ptr<wasm::WasmEngine> engine);
 
   const v8::Context::BackupIncumbentScope* top_backup_incumbent_scope() const {
     return top_backup_incumbent_scope_;
@@ -1757,6 +1773,9 @@ class Isolate : private HiddenFactory {
   const AstStringConstants* ast_string_constants_;
 
   interpreter::Interpreter* interpreter_;
+
+  compiler::PerIsolateCompilerCache* compiler_cache_ = nullptr;
+  Zone* compiler_zone_ = nullptr;
 
   CompilerDispatcher* compiler_dispatcher_;
 

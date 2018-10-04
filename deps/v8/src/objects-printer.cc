@@ -44,6 +44,7 @@
 #include "src/objects/microtask-queue-inl.h"
 #include "src/objects/module-inl.h"
 #include "src/objects/promise-inl.h"
+#include "src/objects/stack-frame-info-inl.h"
 #include "src/ostreams.h"
 #include "src/regexp/jsregexp.h"
 #include "src/transitions-inl.h"
@@ -118,6 +119,7 @@ void HeapObject::HeapObjectPrint(std::ostream& os) {  // NOLINT
       FixedDoubleArray::cast(this)->FixedDoubleArrayPrint(os);
       break;
     case FIXED_ARRAY_TYPE:
+    case AWAIT_CONTEXT_TYPE:
     case BLOCK_CONTEXT_TYPE:
     case CATCH_CONTEXT_TYPE:
     case DEBUG_EVALUATE_CONTEXT_TYPE:
@@ -341,11 +343,11 @@ void HeapObject::HeapObjectPrint(std::ostream& os) {  // NOLINT
       JSRelativeTimeFormat::cast(this)->JSRelativeTimeFormatPrint(os);
       break;
 #endif  // V8_INTL_SUPPORT
-#define MAKE_STRUCT_CASE(NAME, Name, name) \
-  case NAME##_TYPE:                        \
+#define MAKE_STRUCT_CASE(TYPE, Name, name) \
+  case TYPE:                               \
     Name::cast(this)->Name##Print(os);     \
     break;
-  STRUCT_LIST(MAKE_STRUCT_CASE)
+      STRUCT_LIST(MAKE_STRUCT_CASE)
 #undef MAKE_STRUCT_CASE
 
     case ALLOCATION_SITE_TYPE:
@@ -1969,8 +1971,7 @@ void JSCollator::JSCollatorPrint(std::ostream& os) {  // NOLINT
 
 void JSDateTimeFormat::JSDateTimeFormatPrint(std::ostream& os) {  // NOLINT
   JSObjectPrintHeader(os, this, "JSDateTimeFormat");
-  os << "\n - locale: " << Brief(locale());
-  os << "\n - numbering system: " << Brief(numbering_system());
+  os << "\n - icu locale: " << Brief(icu_locale());
   os << "\n - icu simple date format: " << Brief(icu_simple_date_format());
   os << "\n - bound format: " << Brief(bound_format());
   os << "\n";
@@ -1981,7 +1982,7 @@ void JSListFormat::JSListFormatPrint(std::ostream& os) {  // NOLINT
   os << "\n - locale: " << Brief(locale());
   os << "\n - style: " << StyleAsString();
   os << "\n - type: " << TypeAsString();
-  os << "\n - formatter: " << Brief(formatter());
+  os << "\n - icu formatter: " << Brief(icu_formatter());
   os << "\n";
 }
 
@@ -2027,7 +2028,7 @@ void JSRelativeTimeFormat::JSRelativeTimeFormatPrint(
   os << "\n - locale: " << Brief(locale());
   os << "\n - style: " << StyleAsString();
   os << "\n - numeric: " << NumericAsString();
-  os << "\n - formatter: " << Brief(formatter());
+  os << "\n - icu formatter: " << Brief(icu_formatter());
   os << "\n";
 }
 #endif  // V8_INTL_SUPPORT

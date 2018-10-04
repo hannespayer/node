@@ -25,6 +25,7 @@
 #include "src/objects/arguments-inl.h"
 #include "src/objects/js-array-buffer-inl.h"
 #include "src/objects/js-array-inl.h"
+#include "src/objects/js-objects.h"
 #include "src/vector-slot-pair.h"
 
 namespace v8 {
@@ -3028,7 +3029,7 @@ Reduction JSCallReducer::ReduceCallOrConstructWithArrayLikeOrSpread(
         if (access.offset == JSArray::kLengthOffset) {
           // Ignore uses for arguments#length.
           STATIC_ASSERT(JSArray::kLengthOffset ==
-                        JSArgumentsObject::kLengthOffset);
+                        JSArgumentsObjectWithLength::kLengthOffset);
           continue;
         } else if (access.offset == JSObject::kElementsOffset) {
           // Ignore safe uses for arguments#elements.

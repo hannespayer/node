@@ -143,7 +143,7 @@ CallDescriptor* Linkage::ComputeIncoming(Zone* zone,
     SharedFunctionInfo* shared = info->closure()->shared();
     return GetJSCallDescriptor(zone, info->is_osr(),
                                1 + shared->internal_formal_parameter_count(),
-                               CallDescriptor::kNoFlags);
+                               CallDescriptor::kCanUseRoots);
   }
   return nullptr;  // TODO(titzer): ?
 }
@@ -167,7 +167,6 @@ bool Linkage::NeedsFrameStateInput(Runtime::FunctionId function) {
     case Runtime::kPushCatchContext:
     case Runtime::kReThrow:
     case Runtime::kStringEqual:
-    case Runtime::kStringNotEqual:
     case Runtime::kStringLessThan:
     case Runtime::kStringLessThanOrEqual:
     case Runtime::kStringGreaterThan:
@@ -332,8 +331,7 @@ CallDescriptor* Linkage::GetJSCallDescriptor(Zone* zone, bool is_osr,
       Operator::kNoProperties,          // properties
       kNoCalleeSaved,                   // callee-saved
       kNoCalleeSaved,                   // callee-saved fp
-      CallDescriptor::kCanUseRoots |    // flags
-          flags,                        // flags
+      flags,                            // flags
       "js-call");
 }
 

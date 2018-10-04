@@ -67,15 +67,16 @@ class V8_EXPORT_PRIVATE JSCreateLowering final
   Reduction ReduceJSCreateBlockContext(Node* node);
   Reduction ReduceJSCreateGeneratorObject(Node* node);
   Reduction ReduceNewArray(
-      Node* node, Node* length, MapRef initial_map, PretenureFlag pretenure,
+      Node* node, Node* length, MapRef initial_map, ElementsKind elements_kind,
+      PretenureFlag pretenure,
       const SlackTrackingPrediction& slack_tracking_prediction);
   Reduction ReduceNewArray(
       Node* node, Node* length, int capacity, MapRef initial_map,
-      PretenureFlag pretenure,
+      ElementsKind elements_kind, PretenureFlag pretenure,
       const SlackTrackingPrediction& slack_tracking_prediction);
   Reduction ReduceNewArray(
       Node* node, std::vector<Node*> values, MapRef initial_map,
-      PretenureFlag pretenure,
+      ElementsKind elements_kind, PretenureFlag pretenure,
       const SlackTrackingPrediction& slack_tracking_prediction);
   Reduction ReduceJSCreateObject(Node* node);
 
@@ -106,9 +107,6 @@ class V8_EXPORT_PRIVATE JSCreateLowering final
                                     PretenureFlag pretenure);
   Node* AllocateLiteralRegExp(Node* effect, Node* control,
                               JSRegExpRef boilerplate);
-
-  Reduction ReduceNewArrayToStubCall(Node* node,
-                                     base::Optional<AllocationSiteRef> site);
 
   Factory* factory() const;
   Graph* graph() const;

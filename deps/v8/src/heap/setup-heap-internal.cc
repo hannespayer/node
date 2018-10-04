@@ -29,6 +29,7 @@
 #include "src/objects/promise.h"
 #include "src/objects/script.h"
 #include "src/objects/shared-function-info.h"
+#include "src/objects/stack-frame-info.h"
 #include "src/objects/string.h"
 #include "src/regexp/jsregexp.h"
 #include "src/wasm/wasm-objects.h"
@@ -57,33 +58,34 @@ bool Heap::CreateHeapObjects() {
 }
 
 const Heap::StringTypeTable Heap::string_type_table[] = {
-#define STRING_TYPE_ELEMENT(type, size, name, camel_name) \
-  {type, size, RootIndex::k##camel_name##Map},
+#define STRING_TYPE_ELEMENT(type, size, name, CamelName) \
+  {type, size, RootIndex::k##CamelName##Map},
     STRING_TYPE_LIST(STRING_TYPE_ELEMENT)
 #undef STRING_TYPE_ELEMENT
 };
 
 const Heap::ConstantStringTable Heap::constant_string_table[] = {
     {"", RootIndex::kempty_string},
-#define CONSTANT_STRING_ELEMENT(name, contents) {contents, RootIndex::k##name},
-    INTERNALIZED_STRING_LIST(CONSTANT_STRING_ELEMENT)
+#define CONSTANT_STRING_ELEMENT(_, name, contents) \
+  {contents, RootIndex::k##name},
+    INTERNALIZED_STRING_LIST_GENERATOR(CONSTANT_STRING_ELEMENT, /* not used */)
 #undef CONSTANT_STRING_ELEMENT
 };
 
 const Heap::StructTable Heap::struct_table[] = {
-#define STRUCT_TABLE_ELEMENT(NAME, Name, name) \
-  {NAME##_TYPE, Name::kSize, RootIndex::k##Name##Map},
+#define STRUCT_TABLE_ELEMENT(TYPE, Name, name) \
+  {TYPE, Name::kSize, RootIndex::k##Name##Map},
     STRUCT_LIST(STRUCT_TABLE_ELEMENT)
 #undef STRUCT_TABLE_ELEMENT
 
-#define ALLOCATION_SITE_ELEMENT(NAME, Name, Size, name) \
-  {NAME##_TYPE, Name::kSize##Size, RootIndex::k##Name##Size##Map},
-        ALLOCATION_SITE_LIST(ALLOCATION_SITE_ELEMENT)
+#define ALLOCATION_SITE_ELEMENT(_, TYPE, Name, Size, name) \
+  {TYPE, Name::kSize##Size, RootIndex::k##Name##Size##Map},
+        ALLOCATION_SITE_LIST(ALLOCATION_SITE_ELEMENT, /* not used */)
 #undef ALLOCATION_SITE_ELEMENT
 
-#define DATA_HANDLER_ELEMENT(NAME, Name, Size, name) \
-  {NAME##_TYPE, Name::kSizeWithData##Size, RootIndex::k##Name##Size##Map},
-            DATA_HANDLER_LIST(DATA_HANDLER_ELEMENT)
+#define DATA_HANDLER_ELEMENT(_, TYPE, Name, Size, name) \
+  {TYPE, Name::kSizeWithData##Size, RootIndex::k##Name##Size##Map},
+            DATA_HANDLER_LIST(DATA_HANDLER_ELEMENT, /* not used */)
 #undef DATA_HANDLER_ELEMENT
 };
 
@@ -180,8 +182,9 @@ AllocationResult Heap::AllocateEmptyFixedTypedArray(
       array_type == kExternalFloat64Array ? kDoubleAligned : kWordAligned);
   if (!allocation.To(&object)) return allocation;
 
-  object->set_map_after_allocation(MapForFixedTypedArray(array_type),
-                                   SKIP_WRITE_BARRIER);
+  object->set_map_after_allocation(
+      ReadOnlyRoots(this).MapForFixedTypedArray(array_type),
+      SKIP_WRITE_BARRIER);
   FixedTypedArrayBase* elements = FixedTypedArrayBase::cast(object);
   elements->set_base_pointer(elements, SKIP_WRITE_BARRIER);
   elements->set_external_pointer(
@@ -462,6 +465,7 @@ bool Heap::CreateInitialMaps() {
     ALLOCATE_VARSIZE_MAP(CATCH_CONTEXT_TYPE, catch_context)
     ALLOCATE_VARSIZE_MAP(WITH_CONTEXT_TYPE, with_context)
     ALLOCATE_VARSIZE_MAP(DEBUG_EVALUATE_CONTEXT_TYPE, debug_evaluate_context)
+    ALLOCATE_VARSIZE_MAP(AWAIT_CONTEXT_TYPE, await_context)
     ALLOCATE_VARSIZE_MAP(BLOCK_CONTEXT_TYPE, block_context)
     ALLOCATE_VARSIZE_MAP(MODULE_CONTEXT_TYPE, module_context)
     ALLOCATE_VARSIZE_MAP(EVAL_CONTEXT_TYPE, eval_context)
@@ -697,35 +701,35 @@ void Heap::CreateInitialObjects() {
 
   {
     HandleScope scope(isolate());
-#define SYMBOL_INIT(name)                                           \
+#define SYMBOL_INIT(_, name)                                        \
   {                                                                 \
     Handle<Symbol> symbol(                                          \
         isolate()->factory()->NewPrivateSymbol(TENURED_READ_ONLY)); \
     roots_[RootIndex::k##name] = *symbol;                           \
   }
-    PRIVATE_SYMBOL_LIST(SYMBOL_INIT)
+    PRIVATE_SYMBOL_LIST_GENERATOR(SYMBOL_INIT, /* not used */)
 #undef SYMBOL_INIT
   }
 
   {
     HandleScope scope(isolate());
-#define SYMBOL_INIT(name, description)                                    \
+#define SYMBOL_INIT(_, name, description)                                 \
   Handle<Symbol> name = factory->NewSymbol(TENURED_READ_ONLY);            \
   Handle<String> name##d =                                                \
       factory->NewStringFromStaticChars(#description, TENURED_READ_ONLY); \
   name->set_name(*name##d);                                               \
   roots_[RootIndex::k##name] = *name;
-    PUBLIC_SYMBOL_LIST(SYMBOL_INIT)
+    PUBLIC_SYMBOL_LIST_GENERATOR(SYMBOL_INIT, /* not used */)
 #undef SYMBOL_INIT
 
-#define SYMBOL_INIT(name, description)                                    \
+#define SYMBOL_INIT(_, name, description)                                 \
   Handle<Symbol> name = factory->NewSymbol(TENURED_READ_ONLY);            \
   Handle<String> name##d =                                                \
       factory->NewStringFromStaticChars(#description, TENURED_READ_ONLY); \
   name->set_is_well_known_symbol(true);                                   \
   name->set_name(*name##d);                                               \
   roots_[RootIndex::k##name] = *name;
-    WELL_KNOWN_SYMBOL_LIST(SYMBOL_INIT)
+    WELL_KNOWN_SYMBOL_LIST_GENERATOR(SYMBOL_INIT, /* not used */)
 #undef SYMBOL_INIT
 
     // Mark "Interesting Symbols" appropriately.
@@ -851,6 +855,10 @@ void Heap::CreateInitialObjects() {
   cell->set_value(Smi::FromInt(Isolate::kProtectorValid));
   set_promise_species_protector(*cell);
 
+  cell = factory->NewPropertyCell(factory->empty_string());
+  cell->set_value(Smi::FromInt(Isolate::kProtectorValid));
+  set_string_iterator_protector(*cell);
+
   Handle<Cell> string_length_overflow_cell = factory->NewCell(
       handle(Smi::FromInt(Isolate::kProtectorValid), isolate()));
   set_string_length_protector(*string_length_overflow_cell);
@@ -898,19 +906,19 @@ void Heap::CreateInternalAccessorInfoObjects() {
   HandleScope scope(isolate);
   Handle<AccessorInfo> acessor_info;
 
-#define INIT_ACCESSOR_INFO(accessor_name, AccessorName, ...)   \
-  acessor_info = Accessors::Make##AccessorName##Info(isolate); \
+#define INIT_ACCESSOR_INFO(_, accessor_name, AccessorName, ...) \
+  acessor_info = Accessors::Make##AccessorName##Info(isolate);  \
   roots_[RootIndex::k##AccessorName##Accessor] = *acessor_info;
-  ACCESSOR_INFO_LIST(INIT_ACCESSOR_INFO)
+  ACCESSOR_INFO_LIST_GENERATOR(INIT_ACCESSOR_INFO, /* not used */)
 #undef INIT_ACCESSOR_INFO
 
-#define INIT_SIDE_EFFECT_FLAG(accessor_name, AccessorName, GetterType, \
-                              SetterType)                              \
-  AccessorInfo::cast(roots_[RootIndex::k##AccessorName##Accessor])     \
-      ->set_getter_side_effect_type(SideEffectType::GetterType);       \
-  AccessorInfo::cast(roots_[RootIndex::k##AccessorName##Accessor])     \
+#define INIT_SIDE_EFFECT_FLAG(_, accessor_name, AccessorName, GetterType, \
+                              SetterType)                                 \
+  AccessorInfo::cast(roots_[RootIndex::k##AccessorName##Accessor])        \
+      ->set_getter_side_effect_type(SideEffectType::GetterType);          \
+  AccessorInfo::cast(roots_[RootIndex::k##AccessorName##Accessor])        \
       ->set_setter_side_effect_type(SideEffectType::SetterType);
-  ACCESSOR_INFO_LIST(INIT_SIDE_EFFECT_FLAG)
+  ACCESSOR_INFO_LIST_GENERATOR(INIT_SIDE_EFFECT_FLAG, /* not used */)
 #undef INIT_SIDE_EFFECT_FLAG
 }
 

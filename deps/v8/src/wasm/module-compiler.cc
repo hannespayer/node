@@ -180,22 +180,15 @@ void UpdateFeatureUseCounts(Isolate* isolate, const WasmFeatures& detected) {
 
 class JSToWasmWrapperCache {
  public:
-  Handle<Code> GetOrCompileJSToWasmWrapper(Isolate* isolate,
-                                           const NativeModule* native_module,
-                                           uint32_t func_index,
-                                           UseTrapHandler use_trap_handler) {
-    const WasmModule* module = native_module->module();
-    const WasmFunction* func = &module->functions[func_index];
-    bool is_import = func_index < module->num_imported_functions;
-    std::pair<bool, FunctionSig> key(is_import, *func->sig);
+  Handle<Code> GetOrCompileJSToWasmWrapper(Isolate* isolate, FunctionSig* sig,
+                                           bool is_import) {
+    std::pair<bool, FunctionSig> key(is_import, *sig);
     Handle<Code>& cached = cache_[key];
-    if (!cached.is_null()) return cached;
-
-    Handle<Code> code = compiler::CompileJSToWasmWrapper(isolate, native_module,
-                                                         func->sig, is_import)
-                            .ToHandleChecked();
-    cached = code;
-    return code;
+    if (cached.is_null()) {
+      cached = compiler::CompileJSToWasmWrapper(isolate, sig, is_import)
+                   .ToHandleChecked();
+    }
+    return cached;
   }
 
  private:
@@ -1218,14 +1211,14 @@ MaybeHandle<WasmInstanceObject> InstanceBuilder::Build() {
   //--------------------------------------------------------------------------
   if (module_->start_function_index >= 0) {
     int start_index = module_->start_function_index;
-    FunctionSig* sig = module_->functions[start_index].sig;
+    auto& function = module_->functions[start_index];
     Handle<Code> wrapper_code = js_to_wasm_cache_.GetOrCompileJSToWasmWrapper(
-        isolate_, native_module, start_index, use_trap_handler());
+        isolate_, function.sig, function.imported);
     // TODO(clemensh): Don't generate an exported function for the start
     // function. Use CWasmEntry instead.
     start_function_ = WasmExportedFunction::New(
         isolate_, instance, MaybeHandle<String>(), start_index,
-        static_cast<int>(sig->parameter_count()), wrapper_code);
+        static_cast<int>(function.sig->parameter_count()), wrapper_code);
   }
 
   DCHECK(!isolate_->has_pending_exception());
@@ -1501,41 +1494,41 @@ int InstanceBuilder::ProcessImports(Handle<WasmInstanceObject> instance) {
         }
         uint32_t func_index = import.index;
         DCHECK_EQ(num_imported_functions, func_index);
+        auto js_receiver = Handle<JSReceiver>::cast(value);
         FunctionSig* expected_sig = module_->functions[func_index].sig;
-        if (WasmExportedFunction::IsWasmExportedFunction(*value)) {
-          // The imported function is a WASM function from another instance.
-          Handle<WasmExportedFunction> imported_function(
-              WasmExportedFunction::cast(*value), isolate_);
-          Handle<WasmInstanceObject> imported_instance(
-              imported_function->instance(), isolate_);
-          FunctionSig* imported_sig =
-              imported_instance->module()
-                  ->functions[imported_function->function_index()]
-                  .sig;
-          if (*imported_sig != *expected_sig) {
+        auto kind = compiler::GetWasmImportCallKind(js_receiver, expected_sig);
+        switch (kind) {
+          case compiler::WasmImportCallKind::kLinkError:
             ReportLinkError(
                 "imported function does not match the expected type", index,
                 module_name, import_name);
             return -1;
+          case compiler::WasmImportCallKind::kWasmToWasm: {
+            // The imported function is a WASM function from another instance.
+            auto imported_function = Handle<WasmExportedFunction>::cast(value);
+            Handle<WasmInstanceObject> imported_instance(
+                imported_function->instance(), isolate_);
+            // The import reference is the instance object itself.
+            Address imported_target = imported_function->GetWasmCallTarget();
+            ImportedFunctionEntry entry(instance, func_index);
+            entry.set_wasm_to_wasm(*imported_instance, imported_target);
+            break;
           }
-          // The import reference is the instance object itself.
-          Address imported_target = imported_function->GetWasmCallTarget();
-          ImportedFunctionEntry entry(instance, func_index);
-          entry.set_wasm_to_wasm(*imported_instance, imported_target);
-        } else {
-          // The imported function is a callable.
-          Handle<JSReceiver> js_receiver(JSReceiver::cast(*value), isolate_);
-          Handle<Code> wrapper_code =
-              compiler::CompileWasmToJSWrapper(
-                  isolate_, js_receiver, expected_sig, func_index,
-                  module_->origin, use_trap_handler())
-                  .ToHandleChecked();
-          RecordStats(*wrapper_code, isolate_->counters());
+          default: {
+            // The imported function is a callable.
+            Handle<Code> wrapper_code =
+                compiler::CompileWasmImportCallWrapper(
+                    isolate_, kind, expected_sig, func_index, module_->origin,
+                    use_trap_handler())
+                    .ToHandleChecked();
+            RecordStats(*wrapper_code, isolate_->counters());
 
-          WasmCode* wasm_code = native_module->AddCodeCopy(
-              wrapper_code, WasmCode::kWasmToJsWrapper, func_index);
-          ImportedFunctionEntry entry(instance, func_index);
-          entry.set_wasm_to_js(*js_receiver, wasm_code);
+            WasmCode* wasm_code =
+                native_module->AddImportWrapper(wrapper_code, func_index);
+            ImportedFunctionEntry entry(instance, func_index);
+            entry.set_wasm_to_js(*js_receiver, wasm_code);
+            break;
+          }
         }
         num_imported_functions++;
         break;
@@ -2134,7 +2127,7 @@ void InstanceBuilder::LoadTableSegments(Handle<WasmInstanceObject> instance) {
 
           Handle<Code> wrapper_code =
               js_to_wasm_cache_.GetOrCompileJSToWasmWrapper(
-                  isolate_, native_module, func_index, use_trap_handler());
+                  isolate_, function->sig, function->imported);
           MaybeHandle<String> func_name;
           if (module_->origin == kAsmJsOrigin) {
             // For modules arising from asm.js, honor the names section.
@@ -2261,6 +2254,11 @@ std::shared_ptr<StreamingDecoder> AsyncCompileJob::CreateStreamingDecoder() {
 AsyncCompileJob::~AsyncCompileJob() {
   background_task_manager_.CancelAndWait();
   if (native_module_) native_module_->compilation_state()->Abort();
+  // Tell the streaming decoder that the AsyncCompileJob is not available
+  // anymore.
+  // TODO(ahaas): Is this notification really necessary? Check
+  // https://crbug.com/888170.
+  if (stream_) stream_->NotifyCompilationEnded();
   CancelPendingForegroundTask();
   for (auto d : deferred_handles_) delete d;
 }
@@ -2292,7 +2290,6 @@ void AsyncCompileJob::FinishCompile() {
 }
 
 void AsyncCompileJob::AsyncCompileFailed(Handle<Object> error_reason) {
-  if (stream_) stream_->NotifyError();
   // {job} keeps the {this} pointer alive.
   std::shared_ptr<AsyncCompileJob> job =
       isolate_->wasm_engine()->RemoveCompileJob(this);
@@ -3068,13 +3065,12 @@ void CompileJsToWasmWrappers(Isolate* isolate,
   int wrapper_index = 0;
   Handle<FixedArray> export_wrappers(module_object->export_wrappers(), isolate);
   NativeModule* native_module = module_object->native_module();
-  UseTrapHandler use_trap_handler =
-      native_module->use_trap_handler() ? kUseTrapHandler : kNoTrapHandler;
   const WasmModule* module = native_module->module();
   for (auto exp : module->export_table) {
     if (exp.kind != kExternalFunction) continue;
+    auto& function = module->functions[exp.index];
     Handle<Code> wrapper_code = js_to_wasm_cache.GetOrCompileJSToWasmWrapper(
-        isolate, native_module, exp.index, use_trap_handler);
+        isolate, function.sig, function.imported);
     export_wrappers->set(wrapper_index, *wrapper_code);
     RecordStats(*wrapper_code, isolate->counters());
     ++wrapper_index;
@@ -3095,12 +3091,6 @@ Handle<Script> CreateWasmScript(Isolate* isolate,
 
   const int kBufferSize = 32;
   char buffer[kBufferSize];
-  int url_chars = SNPrintF(ArrayVector(buffer), "wasm://wasm/%08x", hash);
-  DCHECK(url_chars >= 0 && url_chars < kBufferSize);
-  MaybeHandle<String> url_str = isolate->factory()->NewStringFromOneByte(
-      Vector<const uint8_t>(reinterpret_cast<uint8_t*>(buffer), url_chars),
-      TENURED);
-  script->set_source_url(*url_str.ToHandleChecked());
 
   int name_chars = SNPrintF(ArrayVector(buffer), "wasm-%08x", hash);
   DCHECK(name_chars >= 0 && name_chars < kBufferSize);

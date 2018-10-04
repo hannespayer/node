@@ -8,89 +8,55 @@
 #include "src/roots.h"
 
 #include "src/heap/heap-inl.h"
-#include "src/objects/api-callbacks.h"
 
 namespace v8 {
-
 namespace internal {
 
-ReadOnlyRoots::ReadOnlyRoots(Isolate* isolate) : heap_(isolate->heap()) {}
+V8_INLINE bool operator<(RootIndex lhs, RootIndex rhs) {
+  typedef typename std::underlying_type<RootIndex>::type type;
+  return static_cast<type>(lhs) < static_cast<type>(rhs);
+}
 
-#define ROOT_ACCESSOR(type, name, camel_name)                        \
-  type* ReadOnlyRoots::name() {                                      \
-    return type::cast(heap_->roots_[RootIndex::k##camel_name]);      \
-  }                                                                  \
-  Handle<type> ReadOnlyRoots::name##_handle() {                      \
-    return Handle<type>(                                             \
-        bit_cast<type**>(&heap_->roots_[RootIndex::k##camel_name])); \
+V8_INLINE RootIndex operator++(RootIndex& index) {
+  typedef typename std::underlying_type<RootIndex>::type type;
+  index = static_cast<RootIndex>(static_cast<type>(index) + 1);
+  return index;
+}
+
+ReadOnlyRoots::ReadOnlyRoots(Heap* heap) : roots_table_(heap->roots_table()) {}
+
+ReadOnlyRoots::ReadOnlyRoots(Isolate* isolate)
+    : roots_table_(isolate->heap()->roots_table()) {}
+
+#define ROOT_ACCESSOR(type, name, CamelName)                       \
+  type* ReadOnlyRoots::name() {                                    \
+    return type::cast(roots_table_[RootIndex::k##CamelName]);      \
+  }                                                                \
+  Handle<type> ReadOnlyRoots::name##_handle() {                    \
+    return Handle<type>(                                           \
+        bit_cast<type**>(&roots_table_[RootIndex::k##CamelName])); \
   }
-STRONG_READ_ONLY_ROOT_LIST(ROOT_ACCESSOR)
+
+READ_ONLY_ROOT_LIST(ROOT_ACCESSOR)
 #undef ROOT_ACCESSOR
 
-#define STRING_ACCESSOR(name, str)                               \
-  String* ReadOnlyRoots::name() {                                \
-    return String::cast(heap_->roots_[RootIndex::k##name]);      \
-  }                                                              \
-  Handle<String> ReadOnlyRoots::name##_handle() {                \
-    return Handle<String>(                                       \
-        bit_cast<String**>(&heap_->roots_[RootIndex::k##name])); \
-  }
-INTERNALIZED_STRING_LIST(STRING_ACCESSOR)
-#undef STRING_ACCESSOR
+Map* ReadOnlyRoots::MapForFixedTypedArray(ExternalArrayType array_type) {
+  RootIndex root_index = RootsTable::RootIndexForFixedTypedArray(array_type);
+  return Map::cast(roots_table_[root_index]);
+}
 
-#define SYMBOL_ACCESSOR(name)                                    \
-  Symbol* ReadOnlyRoots::name() {                                \
-    return Symbol::cast(heap_->roots_[RootIndex::k##name]);      \
-  }                                                              \
-  Handle<Symbol> ReadOnlyRoots::name##_handle() {                \
-    return Handle<Symbol>(                                       \
-        bit_cast<Symbol**>(&heap_->roots_[RootIndex::k##name])); \
-  }
-PRIVATE_SYMBOL_LIST(SYMBOL_ACCESSOR)
-#undef SYMBOL_ACCESSOR
-
-#define SYMBOL_ACCESSOR(name, description)                       \
-  Symbol* ReadOnlyRoots::name() {                                \
-    return Symbol::cast(heap_->roots_[RootIndex::k##name]);      \
-  }                                                              \
-  Handle<Symbol> ReadOnlyRoots::name##_handle() {                \
-    return Handle<Symbol>(                                       \
-        bit_cast<Symbol**>(&heap_->roots_[RootIndex::k##name])); \
-  }
-PUBLIC_SYMBOL_LIST(SYMBOL_ACCESSOR)
-WELL_KNOWN_SYMBOL_LIST(SYMBOL_ACCESSOR)
-#undef SYMBOL_ACCESSOR
-
-#define STRUCT_MAP_ACCESSOR(NAME, Name, name)                      \
-  Map* ReadOnlyRoots::name##_map() {                               \
-    return Map::cast(heap_->roots_[RootIndex::k##Name##Map]);      \
-  }                                                                \
-  Handle<Map> ReadOnlyRoots::name##_map_handle() {                 \
-    return Handle<Map>(                                            \
-        bit_cast<Map**>(&heap_->roots_[RootIndex::k##Name##Map])); \
-  }
-STRUCT_LIST(STRUCT_MAP_ACCESSOR)
-#undef STRUCT_MAP_ACCESSOR
-
-#define ALLOCATION_SITE_MAP_ACCESSOR(NAME, Name, Size, name)             \
-  Map* ReadOnlyRoots::name##_map() {                                     \
-    return Map::cast(heap_->roots_[RootIndex::k##Name##Size##Map]);      \
-  }                                                                      \
-  Handle<Map> ReadOnlyRoots::name##_map_handle() {                       \
-    return Handle<Map>(                                                  \
-        bit_cast<Map**>(&heap_->roots_[RootIndex::k##Name##Size##Map])); \
-  }
-ALLOCATION_SITE_LIST(ALLOCATION_SITE_MAP_ACCESSOR)
-#undef ALLOCATION_SITE_MAP_ACCESSOR
+Map* ReadOnlyRoots::MapForFixedTypedArray(ElementsKind elements_kind) {
+  RootIndex root_index = RootsTable::RootIndexForFixedTypedArray(elements_kind);
+  return Map::cast(roots_table_[root_index]);
+}
 
 FixedTypedArrayBase* ReadOnlyRoots::EmptyFixedTypedArrayForMap(const Map* map) {
-  // TODO(delphick): All of these empty fixed type arrays are in RO_SPACE so
-  // this the method below can be moved into ReadOnlyRoots.
-  return heap_->EmptyFixedTypedArrayForMap(map);
+  RootIndex root_index =
+      RootsTable::RootIndexForEmptyFixedTypedArray(map->elements_kind());
+  return FixedTypedArrayBase::cast(roots_table_[root_index]);
 }
 
 }  // namespace internal
-
 }  // namespace v8
 
 #endif  // V8_ROOTS_INL_H_

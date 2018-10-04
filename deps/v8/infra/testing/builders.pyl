@@ -278,6 +278,17 @@
       {'name': 'v8testing', 'variant': 'slow_path'},
     ],
   },
+  # TODO(machenbach): Experimental builder with incomplete configs. Should be
+  # similar to v8_linux64_rel_ng_triggered after testing.
+  'v8_linux64_rel_xg': {
+    'swarming_dimensions' : {
+      'cpu': 'x86-64-avx2',
+    },
+    'tests': [
+      {'name': 'v8initializers'},
+      {'name': 'v8testing', 'shards': 2},
+    ],
+  },
   'v8_linux64_tsan_rel': {
     'tests': [
       {'name': 'benchmarks'},
@@ -326,6 +337,24 @@
       {'name': 'test262', 'shards': 2},
       {'name': 'v8testing', 'shards': 9},
       {'name': 'v8testing', 'variant': 'extra', 'shards': 4},
+    ],
+  },
+  ##############################################################################
+  # Odroids with native arm
+  'v8_odroid_arm_rel_ng_triggered': {
+    'swarming_dimensions' : {
+      'cores': '8',
+      'cpu': 'armv7l-32-ODROID-XU4',
+      'os': 'Ubuntu-16.04',
+    },
+    'swarming_task_attrs': {
+      # Use same prio as CI due to limited resources.
+      'priority': 25,
+    },
+    'tests': [
+      {'name': 'benchmarks'},
+      {'name': 'optimize_for_size'},
+      {'name': 'v8testing', 'shards': 2},
     ],
   },
   ##############################################################################

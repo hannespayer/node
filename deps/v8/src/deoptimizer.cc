@@ -1476,7 +1476,13 @@ void Deoptimizer::DoComputeBuiltinContinuation(
   const bool must_handle_result =
       !is_topmost || deopt_kind_ == DeoptimizeKind::kLazy;
 
+#if defined(V8_TARGET_ARCH_IA32) && defined(V8_EMBEDDED_BUILTINS)
+  // TODO(v8:6666): Fold into Default config once root is fully supported.
+  const RegisterConfiguration* config(
+      RegisterConfiguration::PreserveRootIA32());
+#else
   const RegisterConfiguration* config(RegisterConfiguration::Default());
+#endif
   const int allocatable_register_count =
       config->num_allocatable_general_registers();
   const int padding_slot_count =
@@ -3462,6 +3468,7 @@ void TranslatedState::InitializeCapturedObjectAt(
       return;
 
     case FIXED_ARRAY_TYPE:
+    case AWAIT_CONTEXT_TYPE:
     case BLOCK_CONTEXT_TYPE:
     case CATCH_CONTEXT_TYPE:
     case DEBUG_EVALUATE_CONTEXT_TYPE:
@@ -3605,6 +3612,7 @@ void TranslatedState::EnsureCapturedObjectAllocatedAt(
 
     case FIXED_ARRAY_TYPE:
     case SCRIPT_CONTEXT_TABLE_TYPE:
+    case AWAIT_CONTEXT_TYPE:
     case BLOCK_CONTEXT_TYPE:
     case CATCH_CONTEXT_TYPE:
     case DEBUG_EVALUATE_CONTEXT_TYPE:

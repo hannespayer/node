@@ -326,6 +326,7 @@ namespace internal {
   CPP(ArrayUnshift)                                                            \
   /* Support for Array.from and other array-copying idioms */                  \
   TFS(CloneFastJSArray, kSource)                                               \
+  TFS(CloneFastJSArrayFillingHoles, kSource)                                   \
   TFS(ExtractFastJSArray, kSource, kBegin, kCount)                             \
   /* ES6 #sec-array.prototype.every */                                         \
   TFS(ArrayEveryLoopContinuation, kReceiver, kCallbackFn, kThisArg, kArray,    \
@@ -494,6 +495,7 @@ namespace internal {
   CPP(ConsoleProfile)                                                          \
   CPP(ConsoleProfileEnd)                                                       \
   CPP(ConsoleTime)                                                             \
+  CPP(ConsoleTimeLog)                                                          \
   CPP(ConsoleTimeEnd)                                                          \
   CPP(ConsoleTimeStamp)                                                        \
   CPP(ConsoleContext)                                                          \
@@ -1124,6 +1126,7 @@ namespace internal {
   /* StringIterator */                                                         \
   /* ES6 #sec-%stringiteratorprototype%.next */                                \
   TFJ(StringIteratorPrototypeNext, 0, kReceiver)                               \
+  TFS(StringToList, kSource)                                                   \
                                                                                \
   /* Symbol */                                                                 \
   /* ES #sec-symbol-constructor */                                             \
@@ -1224,6 +1227,7 @@ namespace internal {
   TFC(WasmGrowMemory, WasmGrowMemory, 1)                                       \
   TFC(WasmStackGuard, NoContext, 1)                                            \
   TFC(WasmToNumber, TypeConversion, 1)                                         \
+  TFC(WasmThrow, WasmThrow, 1)                                                 \
   TFS(ThrowWasmTrapUnreachable)                                                \
   TFS(ThrowWasmTrapMemOutOfBounds)                                             \
   TFS(ThrowWasmTrapUnalignedAccess)                                            \
@@ -1359,6 +1363,8 @@ namespace internal {
   CPP(DateTimeFormatPrototypeFormat)                                   \
   /* ecma402 #sec-intl.datetimeformat.prototype.formattoparts */       \
   CPP(DateTimeFormatPrototypeFormatToParts)                            \
+  /* ecma402 #sec-intl.datetimeformat.prototype.resolvedoptions */     \
+  CPP(DateTimeFormatPrototypeResolvedOptions)                          \
   /* ecma402 #sec-intl.datetimeformat.supportedlocalesof */            \
   CPP(DateTimeFormatSupportedLocalesOf)                                \
   /* ecma402 #sec-intl-listformat-constructor */                       \
@@ -1495,6 +1501,7 @@ namespace internal {
   V(WasmGrowMemory)                      \
   V(WasmStackGuard)                      \
   V(WasmToNumber)                        \
+  V(WasmThrow)                           \
   V(DoubleToI)
 
 // The exception thrown in the following builtins are caught internally and will

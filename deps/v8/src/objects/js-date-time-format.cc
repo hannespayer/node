@@ -293,14 +293,8 @@ std::string JSDateTimeFormat::CanonicalizeTimeZoneID(Isolate* isolate,
 }
 
 MaybeHandle<JSObject> JSDateTimeFormat::ResolvedOptions(
-    Isolate* isolate, Handle<JSReceiver> format_holder) {
+    Isolate* isolate, Handle<JSDateTimeFormat> date_time_format) {
   Factory* factory = isolate->factory();
-  // 3. Let dtf be ? UnwrapDateTimeFormat(dtf).
-  Handle<JSDateTimeFormat> format;
-  ASSIGN_RETURN_ON_EXCEPTION(
-      isolate, format,
-      JSDateTimeFormat::UnwrapDateTimeFormat(isolate, format_holder), JSObject);
-
   // 4. Let options be ! ObjectCreate(%ObjectPrototype%).
   Handle<JSObject> options = factory->NewJSObject(isolate->object_function());
 
@@ -309,12 +303,18 @@ MaybeHandle<JSObject> JSDateTimeFormat::ResolvedOptions(
   Handle<Object> resolved_obj;
 
   // locale
-  Handle<String> locale(format->locale(), isolate);
+  UErrorCode status = U_ZERO_ERROR;
+  char language[ULOC_FULLNAME_CAPACITY];
+  uloc_toLanguageTag(date_time_format->icu_locale()->raw()->getName(), language,
+                     ULOC_FULLNAME_CAPACITY, FALSE, &status);
+  CHECK(U_SUCCESS(status));
+  Handle<String> locale = factory->NewStringFromAsciiChecked(language);
   CHECK(JSReceiver::CreateDataProperty(
             isolate, options, factory->locale_string(), locale, kDontThrow)
             .FromJust());
 
-  icu::SimpleDateFormat* icu_simple_date_format = UnpackDateFormat(format);
+  icu::SimpleDateFormat* icu_simple_date_format =
+      date_time_format->icu_simple_date_format()->raw();
   // calendar
   const icu::Calendar* calendar = icu_simple_date_format->getCalendar();
   // getType() returns legacy calendar type name instead of LDML/BCP47 calendar
@@ -337,12 +337,18 @@ MaybeHandle<JSObject> JSDateTimeFormat::ResolvedOptions(
             kDontThrow)
             .FromJust());
 
-  // numberingSystem
-  if (format->numbering_system()->IsString()) {
-    Handle<String> numbering_system(format->numbering_system(), isolate);
-    CHECK(JSReceiver::CreateDataProperty(isolate, options,
-                                         factory->numberingSystem_string(),
-                                         numbering_system, kDontThrow)
+  // Ugly hack. ICU doesn't expose numbering system in any way, so we have
+  // to assume that for given locale NumberingSystem constructor produces the
+  // same digits as NumberFormat/Calendar would.
+  // Tracked by https://unicode-org.atlassian.net/browse/ICU-13431
+  std::unique_ptr<icu::NumberingSystem> numbering_system(
+      icu::NumberingSystem::createInstance(
+          *(date_time_format->icu_locale()->raw()), status));
+  if (U_SUCCESS(status)) {
+    CHECK(JSReceiver::CreateDataProperty(
+              isolate, options, factory->numberingSystem_string(),
+              factory->NewStringFromAsciiChecked(numbering_system->getName()),
+              kDontThrow)
               .FromJust());
   }
 
@@ -350,10 +356,10 @@ MaybeHandle<JSObject> JSDateTimeFormat::ResolvedOptions(
   const icu::TimeZone& tz = calendar->getTimeZone();
   icu::UnicodeString time_zone;
   tz.getID(time_zone);
-  UErrorCode error = U_ZERO_ERROR;
+  status = U_ZERO_ERROR;
   icu::UnicodeString canonical_time_zone;
-  icu::TimeZone::getCanonicalID(time_zone, canonical_time_zone, error);
-  if (U_SUCCESS(error)) {
+  icu::TimeZone::getCanonicalID(time_zone, canonical_time_zone, status);
+  if (U_SUCCESS(status)) {
     Handle<String> timezone_value;
     // In CLDR (http://unicode.org/cldr/trac/ticket/9943), Etc/UTC is made
     // a separate timezone ID from Etc/GMT even though they're still the same
@@ -386,7 +392,6 @@ MaybeHandle<JSObject> JSDateTimeFormat::ResolvedOptions(
   std::string pattern;
   pattern_unicode.toUTF8String(pattern);
   SetPropertyFromPattern(isolate, pattern, options);
-
   return options;
 }
 
@@ -430,7 +435,7 @@ MaybeHandle<String> FormatDateTime(Isolate* isolate,
   }
 
   icu::SimpleDateFormat* date_format =
-      JSDateTimeFormat::UnpackDateFormat(date_time_format);
+      date_time_format->icu_simple_date_format()->raw();
   CHECK_NOT_NULL(date_format);
 
   icu::UnicodeString result;
@@ -737,39 +742,6 @@ std::unique_ptr<icu::SimpleDateFormat> CreateICUDateFormat(
   return date_format;
 }
 
-void SetResolvedDateSettings(Isolate* isolate, const icu::Locale& icu_locale,
-                             icu::SimpleDateFormat* date_format,
-                             Handle<JSDateTimeFormat> date_time_format) {
-  Factory* factory = isolate->factory();
-
-  // Set the locale
-  // 12. Set dateTimeFormat.[[Locale]] to r.[[locale]].
-  UErrorCode status = U_ZERO_ERROR;
-  char result[ULOC_FULLNAME_CAPACITY];
-  uloc_toLanguageTag(icu_locale.getName(), result, ULOC_FULLNAME_CAPACITY,
-                     FALSE, &status);
-  Handle<String> locale_str = U_SUCCESS(status)
-                                  ? factory->NewStringFromAsciiChecked(result)
-                                  : factory->NewStringFromStaticChars("und");
-  date_time_format->set_locale(*locale_str);
-
-  // TODO(ftang): try to avoid storing numbering_system into JSDateTimeFormat
-  // later.
-  // Ugly hack. ICU doesn't expose numbering system in any way, so we have
-  // to assume that for given locale NumberingSystem constructor produces the
-  // same digits as NumberFormat/Calendar would.
-  // 15. Set dateTimeFormat.[[NumberingSystem]] to r.[[nu]].
-  status = U_ZERO_ERROR;
-  std::unique_ptr<icu::NumberingSystem> numbering_system(
-      icu::NumberingSystem::createInstance(icu_locale, status));
-  if (U_SUCCESS(status)) {
-    const char* ns = numbering_system->getName();
-    Handle<String> numbering_system_str =
-        factory->NewStringFromAsciiChecked(ns);
-    date_time_format->set_numbering_system(*numbering_system_str);
-  }
-}
-
 }  // namespace
 
 enum FormatMatcherOption { kBestFit, kBasic };
@@ -836,7 +808,6 @@ MaybeHandle<JSDateTimeFormat> JSDateTimeFormat::Initialize(
   Maybe<std::string> maybe_skeleton =
       JSDateTimeFormat::OptionsToSkeleton(isolate, options);
   MAYBE_RETURN(maybe_skeleton, Handle<JSDateTimeFormat>());
-  CHECK(!maybe_skeleton.FromJust().empty());
   std::string skeleton = maybe_skeleton.FromJust();
 
   // 13. Set dateTimeFormat.[[Calendar]] to r.[[ca]].
@@ -862,18 +833,20 @@ MaybeHandle<JSDateTimeFormat> JSDateTimeFormat::Initialize(
     }
   }
   date_format->adoptCalendar(calendar.release());
-  SetResolvedDateSettings(isolate, icu_locale, date_format.get(),
-                          date_time_format);
+
+  // Set the locale
+  // 12. Set dateTimeFormat.[[Locale]] to r.[[locale]].
+  icu::Locale* cloned_locale = icu_locale.clone();
+  CHECK_NOT_NULL(cloned_locale);
+  Handle<Managed<icu::Locale>> managed_locale =
+      Managed<icu::Locale>::FromRawPtr(isolate, 0, cloned_locale);
+  date_time_format->set_icu_locale(*managed_locale);
+
   Handle<Managed<icu::SimpleDateFormat>> managed_format =
       Managed<icu::SimpleDateFormat>::FromUniquePtr(isolate, 0,
                                                     std::move(date_format));
   date_time_format->set_icu_simple_date_format(*managed_format);
   return date_time_format;
-}
-
-icu::SimpleDateFormat* JSDateTimeFormat::UnpackDateFormat(
-    Handle<JSDateTimeFormat> date_time_format) {
-  return date_time_format->icu_simple_date_format()->raw();
 }
 
 namespace {
@@ -935,7 +908,7 @@ MaybeHandle<Object> JSDateTimeFormat::FormatToParts(
     double date_value) {
   Factory* factory = isolate->factory();
   icu::SimpleDateFormat* format =
-      JSDateTimeFormat::UnpackDateFormat(date_time_format);
+      date_time_format->icu_simple_date_format()->raw();
   CHECK_NOT_NULL(format);
 
   icu::UnicodeString formatted;
