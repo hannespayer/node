@@ -744,12 +744,12 @@ void InterpreterAssembler::CollectCallableFeedback(Node* target, Node* context,
         feedback,
         HeapConstant(FeedbackVector::UninitializedSentinel(isolate())));
     GotoIf(is_uninitialized, &initialize);
-    CSA_ASSERT(this, IsWeakOrClearedHeapObject(feedback));
+    CSA_ASSERT(this, IsWeakOrCleared(feedback));
 
     // If the weak reference is cleared, we have a new chance to become
     // monomorphic.
     Comment("check if weak reference is cleared");
-    Branch(IsClearedWeakHeapObject(feedback), &initialize, &mark_megamorphic);
+    Branch(IsCleared(feedback), &initialize, &mark_megamorphic);
 
     BIND(&initialize);
     {
@@ -803,7 +803,7 @@ void InterpreterAssembler::CollectCallableFeedback(Node* target, Node* context,
       // MegamorphicSentinel is an immortal immovable object so
       // write-barrier is not needed.
       Comment("transition to megamorphic");
-      DCHECK(Heap::RootIsImmortalImmovable(RootIndex::kmegamorphic_symbol));
+      DCHECK(RootsTable::IsImmortalImmovable(RootIndex::kmegamorphic_symbol));
       StoreFeedbackVectorSlot(
           feedback_vector, slot_id,
           HeapConstant(FeedbackVector::MegamorphicSentinel(isolate())),
@@ -948,12 +948,12 @@ Node* InterpreterAssembler::Construct(Node* target, Node* context,
     GotoIf(is_megamorphic, &construct);
 
     Comment("check if weak reference");
-    GotoIfNot(IsWeakOrClearedHeapObject(feedback), &check_allocation_site);
+    GotoIfNot(IsWeakOrCleared(feedback), &check_allocation_site);
 
     // If the weak reference is cleared, we have a new chance to become
     // monomorphic.
     Comment("check if weak reference is cleared");
-    Branch(IsClearedWeakHeapObject(feedback), &initialize, &mark_megamorphic);
+    Branch(IsCleared(feedback), &initialize, &mark_megamorphic);
 
     BIND(&check_allocation_site);
     {
@@ -1054,7 +1054,7 @@ Node* InterpreterAssembler::Construct(Node* target, Node* context,
       // MegamorphicSentinel is an immortal immovable object so
       // write-barrier is not needed.
       Comment("transition to megamorphic");
-      DCHECK(Heap::RootIsImmortalImmovable(RootIndex::kmegamorphic_symbol));
+      DCHECK(RootsTable::IsImmortalImmovable(RootIndex::kmegamorphic_symbol));
       StoreFeedbackVectorSlot(
           feedback_vector, slot_id,
           HeapConstant(FeedbackVector::MegamorphicSentinel(isolate())),
@@ -1127,12 +1127,12 @@ Node* InterpreterAssembler::ConstructWithSpread(Node* target, Node* context,
     GotoIf(is_megamorphic, &construct);
 
     Comment("check if weak reference");
-    GotoIfNot(IsWeakOrClearedHeapObject(feedback), &check_initialized);
+    GotoIfNot(IsWeakOrCleared(feedback), &check_initialized);
 
     // If the weak reference is cleared, we have a new chance to become
     // monomorphic.
     Comment("check if weak reference is cleared");
-    Branch(IsClearedWeakHeapObject(feedback), &initialize, &mark_megamorphic);
+    Branch(IsCleared(feedback), &initialize, &mark_megamorphic);
 
     BIND(&check_initialized);
     {
@@ -1195,7 +1195,7 @@ Node* InterpreterAssembler::ConstructWithSpread(Node* target, Node* context,
       // MegamorphicSentinel is an immortal immovable object so
       // write-barrier is not needed.
       Comment("transition to megamorphic");
-      DCHECK(Heap::RootIsImmortalImmovable(RootIndex::kmegamorphic_symbol));
+      DCHECK(RootsTable::IsImmortalImmovable(RootIndex::kmegamorphic_symbol));
       StoreFeedbackVectorSlot(
           feedback_vector, slot_id,
           HeapConstant(FeedbackVector::MegamorphicSentinel(isolate())),

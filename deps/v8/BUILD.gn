@@ -18,6 +18,12 @@ if (is_android) {
 import("gni/v8.gni")
 import("snapshot_toolchain.gni")
 
+# Specifies if the target build is a simulator build. Comparing target cpu
+# with v8 target cpu to not affect simulator builds for making cross-compile
+# snapshots.
+is_target_simulator = (target_cpu != v8_target_cpu && !v8_multi_arch_build) ||
+                      (current_cpu != v8_current_cpu && v8_multi_arch_build)
+
 declare_args() {
   # Print to stdout on Android.
   v8_android_log_stdout = false
@@ -31,6 +37,11 @@ declare_args() {
 
   # Sets -DV8_ENABLE_FUTURE.
   v8_enable_future = false
+
+  # Lite mode disables a number of performance optimizations to reduce memory
+  # at the cost of performance.
+  # Sets --DV8_LITE_MODE.
+  v8_enable_lite_mode = false
 
   # Sets -DVERIFY_HEAP.
   v8_enable_verify_heap = ""
@@ -152,7 +163,12 @@ declare_args() {
   v8_check_microtasks_scopes_consistency = ""
 
   # Enable mitigations for executing untrusted code.
-  v8_untrusted_code_mitigations = true
+  # Disabled by default on ia32 due to conflicting requirements with embedded
+  # builtins. Enabled by default on Android since it doesn't support
+  # site-isolation in Chrome and on simulator builds which test code generation
+  # on these platforms.
+  v8_untrusted_code_mitigations =
+      v8_current_cpu != "x86" && (is_android || is_target_simulator)
 
   # Enable minor mark compact.
   v8_enable_minor_mc = true
@@ -205,11 +221,6 @@ assert(
         !v8_untrusted_code_mitigations,
     "Embedded builtins on ia32 and untrusted code mitigations are incompatible")
 
-# Specifies if the target build is a simulator build. Comparing target cpu
-# with v8 target cpu to not affect simulator builds for making cross-compile
-# snapshots.
-is_target_simulator = target_cpu != v8_target_cpu
-
 v8_random_seed = "314159265"
 v8_toolset_for_shell = "host"
 
@@ -224,10 +235,10 @@ config("internal_config") {
     "$target_gen_dir",
   ]
 
-  defines = []
+  configs = [ "//build/config/compiler:wexit_time_destructors" ]
 
   if (is_component_build) {
-    defines += [ "BUILDING_V8_SHARED" ]
+    defines = [ "BUILDING_V8_SHARED" ]
   }
 }
 
@@ -313,6 +324,9 @@ config("features") {
       [ "V8_TYPED_ARRAY_MAX_SIZE_IN_HEAP=${v8_typed_array_max_size_in_heap}" ]
   if (v8_enable_future) {
     defines += [ "V8_ENABLE_FUTURE" ]
+  }
+  if (v8_enable_lite_mode) {
+    defines += [ "V8_LITE_MODE" ]
   }
   if (v8_enable_gdbjit) {
     defines += [ "ENABLE_GDB_JIT_INTERFACE" ]
@@ -675,7 +689,7 @@ action("js2c") {
   # NOSORT
   sources = [
     "src/js/macros.py",
-    "src/messages.h",
+    "src/message-template.h",
     "src/js/prologue.js",
     "src/js/array.js",
     "src/js/typedarray.js",
@@ -868,6 +882,8 @@ action("postmortem-metadata") {
     "src/objects/js-array-buffer.h",
     "src/objects/js-objects-inl.h",
     "src/objects/js-objects.h",
+    "src/objects/js-promise-inl.h",
+    "src/objects/js-promise.h",
     "src/objects/js-regexp-inl.h",
     "src/objects/js-regexp.h",
     "src/objects/js-regexp-string-iterator-inl.h",
@@ -898,6 +914,7 @@ torque_files = [
   "src/builtins/array.tq",
   "src/builtins/array-copywithin.tq",
   "src/builtins/array-foreach.tq",
+  "src/builtins/array-join.tq",
   "src/builtins/array-lastindexof.tq",
   "src/builtins/array-reverse.tq",
   "src/builtins/array-splice.tq",
@@ -1160,6 +1177,8 @@ action("v8_dump_build_config") {
     "v8_enable_verify_predictable=$v8_enable_verify_predictable",
     "v8_target_cpu=\"$v8_target_cpu\"",
     "v8_use_snapshot=$v8_use_snapshot",
+    "v8_enable_embedded_builtins=$v8_enable_embedded_builtins",
+    "v8_enable_verify_csa=$v8_enable_verify_csa",
   ]
 
   if (v8_current_cpu == "mips" || v8_current_cpu == "mipsel" ||
@@ -1638,6 +1657,7 @@ v8_source_set("v8_base") {
     "src/builtins/builtins-typed-array.cc",
     "src/builtins/builtins-utils-inl.h",
     "src/builtins/builtins-utils.h",
+    "src/builtins/builtins-weak-refs.cc",
     "src/builtins/builtins.cc",
     "src/builtins/builtins.h",
     "src/builtins/constants-table-builder.cc",
@@ -1669,16 +1689,10 @@ v8_source_set("v8_base") {
     "src/compilation-cache.h",
     "src/compilation-statistics.cc",
     "src/compilation-statistics.h",
-    "src/compiler-dispatcher/compiler-dispatcher-job.cc",
-    "src/compiler-dispatcher/compiler-dispatcher-job.h",
-    "src/compiler-dispatcher/compiler-dispatcher-tracer.cc",
-    "src/compiler-dispatcher/compiler-dispatcher-tracer.h",
     "src/compiler-dispatcher/compiler-dispatcher.cc",
     "src/compiler-dispatcher/compiler-dispatcher.h",
     "src/compiler-dispatcher/optimizing-compile-dispatcher.cc",
     "src/compiler-dispatcher/optimizing-compile-dispatcher.h",
-    "src/compiler-dispatcher/unoptimized-compile-job.cc",
-    "src/compiler-dispatcher/unoptimized-compile-job.h",
     "src/compiler.cc",
     "src/compiler.h",
     "src/compiler/access-builder.cc",
@@ -2134,6 +2148,7 @@ v8_source_set("v8_base") {
     "src/interpreter/interpreter.h",
     "src/intl.cc",
     "src/intl.h",
+    "src/isolate-data.h",
     "src/isolate-inl.h",
     "src/isolate.cc",
     "src/isolate.h",
@@ -2171,6 +2186,7 @@ v8_source_set("v8_base") {
     "src/math-random.h",
     "src/maybe-handles-inl.h",
     "src/maybe-handles.h",
+    "src/message-template.h",
     "src/messages.cc",
     "src/messages.h",
     "src/msan.h",
@@ -2249,6 +2265,14 @@ v8_source_set("v8_base") {
     "src/objects/js-relative-time-format-inl.h",
     "src/objects/js-relative-time-format.cc",
     "src/objects/js-relative-time-format.h",
+    "src/objects/js-segment-iterator-inl.h",
+    "src/objects/js-segment-iterator.cc",
+    "src/objects/js-segment-iterator.h",
+    "src/objects/js-segmenter-inl.h",
+    "src/objects/js-segmenter.cc",
+    "src/objects/js-segmenter.h",
+    "src/objects/js-weak-refs-inl.h",
+    "src/objects/js-weak-refs.h",
     "src/objects/literal-objects-inl.h",
     "src/objects/literal-objects.cc",
     "src/objects/literal-objects.h",
@@ -2301,7 +2325,6 @@ v8_source_set("v8_base") {
     "src/optimized-compilation-info.h",
     "src/ostreams.cc",
     "src/ostreams.h",
-    "src/parsing/duplicate-finder.h",
     "src/parsing/expression-classifier.h",
     "src/parsing/expression-scope-reparenter.cc",
     "src/parsing/expression-scope-reparenter.h",
@@ -2463,7 +2486,13 @@ v8_source_set("v8_base") {
     "src/snapshot/partial-deserializer.h",
     "src/snapshot/partial-serializer.cc",
     "src/snapshot/partial-serializer.h",
+    "src/snapshot/read-only-deserializer.cc",
+    "src/snapshot/read-only-deserializer.h",
+    "src/snapshot/read-only-serializer.cc",
+    "src/snapshot/read-only-serializer.h",
     "src/snapshot/references.h",
+    "src/snapshot/roots-serializer.cc",
+    "src/snapshot/roots-serializer.h",
     "src/snapshot/serializer-common.cc",
     "src/snapshot/serializer-common.h",
     "src/snapshot/serializer.cc",
@@ -2498,6 +2527,7 @@ v8_source_set("v8_base") {
     "src/strtod.cc",
     "src/strtod.h",
     "src/third_party/utf8-decoder/utf8-decoder.h",
+    "src/torque-assembler.h",
     "src/tracing/trace-event.cc",
     "src/tracing/trace-event.h",
     "src/tracing/traced-value.cc",
@@ -2558,6 +2588,8 @@ v8_source_set("v8_base") {
     "src/wasm/function-body-decoder.h",
     "src/wasm/function-compiler.cc",
     "src/wasm/function-compiler.h",
+    "src/wasm/graph-builder-interface.cc",
+    "src/wasm/graph-builder-interface.h",
     "src/wasm/jump-table-assembler.cc",
     "src/wasm/jump-table-assembler.h",
     "src/wasm/leb-helper.h",
@@ -2586,6 +2618,7 @@ v8_source_set("v8_base") {
     "src/wasm/wasm-feature-flags.h",
     "src/wasm/wasm-features.cc",
     "src/wasm/wasm-features.h",
+    "src/wasm/wasm-import-wrapper-cache-inl.h",
     "src/wasm/wasm-interpreter.cc",
     "src/wasm/wasm-interpreter.h",
     "src/wasm/wasm-js.cc",
@@ -2969,6 +3002,12 @@ v8_source_set("v8_base") {
       "src/objects/js-relative-time-format-inl.h",
       "src/objects/js-relative-time-format.cc",
       "src/objects/js-relative-time-format.h",
+      "src/objects/js-segment-iterator-inl.h",
+      "src/objects/js-segment-iterator.cc",
+      "src/objects/js-segment-iterator.h",
+      "src/objects/js-segmenter-inl.h",
+      "src/objects/js-segmenter.cc",
+      "src/objects/js-segmenter.h",
       "src/runtime/runtime-intl.cc",
     ]
   }
@@ -2993,7 +3032,11 @@ v8_source_set("torque_base") {
 
   sources = [
     "src/torque/ast.h",
+    "src/torque/cfg.cc",
+    "src/torque/cfg.h",
     "src/torque/contextual.h",
+    "src/torque/csa-generator.cc",
+    "src/torque/csa-generator.h",
     "src/torque/declarable.cc",
     "src/torque/declarable.h",
     "src/torque/declaration-visitor.cc",
@@ -3007,6 +3050,8 @@ v8_source_set("torque_base") {
     "src/torque/global-context.h",
     "src/torque/implementation-visitor.cc",
     "src/torque/implementation-visitor.h",
+    "src/torque/instructions.cc",
+    "src/torque/instructions.h",
     "src/torque/scope.cc",
     "src/torque/scope.h",
     "src/torque/source-positions.cc",
@@ -3026,6 +3071,9 @@ v8_source_set("torque_base") {
   ]
 
   configs = [ ":internal_config" ]
+  if (is_win && is_asan) {
+    remove_configs = [ "//build/config/sanitizers:default_sanitizer_flags" ]
+  }
 }
 
 v8_component("v8_libbase") {
@@ -3372,6 +3420,9 @@ if (current_toolchain == v8_snapshot_toolchain) {
     ]
 
     configs = [ ":internal_config" ]
+    if (is_win && is_asan) {
+      remove_configs = [ "//build/config/sanitizers:default_sanitizer_flags" ]
+    }
   }
 }
 
@@ -3428,6 +3479,24 @@ group("v8_archive") {
   deps = [
     ":d8",
   ]
+}
+
+# TODO(dglazkov): Remove the "!build_with_chromium" condition once this clause
+# is removed from Chromium.
+if (is_fuchsia && !build_with_chromium) {
+  import("//build/config/fuchsia/rules.gni")
+
+  fuchsia_package("d8_fuchsia_pkg") {
+    testonly = true
+    binary = ":d8"
+    package_name_override = "d8"
+  }
+
+  fuchsia_package_runner("d8_fuchsia") {
+    testonly = true
+    package = ":d8_fuchsia_pkg"
+    package_name_override = "d8"
+  }
 }
 
 group("v8_fuzzers") {
@@ -3523,6 +3592,8 @@ v8_executable("d8") {
     "src/async-hooks-wrapper.h",
     "src/d8-console.cc",
     "src/d8-console.h",
+    "src/d8-platforms.cc",
+    "src/d8-platforms.h",
     "src/d8.cc",
     "src/d8.h",
   ]

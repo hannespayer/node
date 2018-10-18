@@ -29,6 +29,7 @@
 #include "src/heap/worklist.h"
 #include "src/ic/stub-cache.h"
 #include "src/objects/hash-table-inl.h"
+#include "src/objects/js-objects-inl.h"
 #include "src/transitions-inl.h"
 #include "src/utils-inl.h"
 #include "src/v8.h"
@@ -779,7 +780,9 @@ void MarkCompactCollector::Prepare() {
 
 void MarkCompactCollector::FinishConcurrentMarking(
     ConcurrentMarking::StopRequest stop_request) {
-  if (FLAG_concurrent_marking) {
+  // FinishConcurrentMarking is called for both, concurrent and parallel,
+  // marking. It is safe to call this function when tasks are already finished.
+  if (FLAG_parallel_marking || FLAG_concurrent_marking) {
     heap()->concurrent_marking()->Stop(stop_request);
     heap()->concurrent_marking()->FlushLiveBytes(non_atomic_marking_state());
   }
@@ -1457,7 +1460,6 @@ void MarkCompactCollector::ProcessEphemeronsUntilFixpoint() {
                GCTracer::Scope::MC_MARK_WEAK_CLOSURE_EPHEMERON_MARKING);
 
       if (FLAG_parallel_marking) {
-        DCHECK(FLAG_concurrent_marking);
         heap_->concurrent_marking()->RescheduleTasksIfNeeded();
       }
 
@@ -1737,7 +1739,6 @@ void MarkCompactCollector::MarkLiveObjects() {
   {
     TRACE_GC(heap()->tracer(), GCTracer::Scope::MC_MARK_MAIN);
     if (FLAG_parallel_marking) {
-      DCHECK(FLAG_concurrent_marking);
       heap_->concurrent_marking()->RescheduleTasksIfNeeded();
     }
     ProcessMarkingWorklist();
@@ -1859,14 +1860,19 @@ void MarkCompactCollector::ClearNonLiveReferences() {
     // cleared.
     ClearFullMapTransitions();
   }
-  ClearWeakReferences();
-  MarkDependentCodeForDeoptimization();
+  {
+    TRACE_GC(heap()->tracer(), GCTracer::Scope::MC_CLEAR_WEAK_REFERENCES);
+    ClearWeakReferences();
+    ClearWeakCollections();
+    ClearJSWeakCells();
+  }
 
-  ClearWeakCollections();
+  MarkDependentCodeForDeoptimization();
 
   DCHECK(weak_objects_.transition_arrays.IsEmpty());
   DCHECK(weak_objects_.weak_references.IsEmpty());
   DCHECK(weak_objects_.weak_objects_in_code.IsEmpty());
+  DCHECK(weak_objects_.js_weak_cells.IsEmpty());
 }
 
 void MarkCompactCollector::MarkDependentCodeForDeoptimization() {
@@ -2082,6 +2088,57 @@ void MarkCompactCollector::ClearWeakReferences() {
   }
 }
 
+void MarkCompactCollector::ClearJSWeakCells() {
+  if (!FLAG_harmony_weak_refs) {
+    return;
+  }
+  JSWeakCell* weak_cell;
+  bool schedule_cleanup_task = false;
+  HandleScope handle_scope(isolate());
+  while (weak_objects_.js_weak_cells.Pop(kMainThread, &weak_cell)) {
+    // We do not insert cleared weak cells into the list, so the value
+    // cannot be a Smi here.
+    HeapObject* target = HeapObject::cast(weak_cell->target());
+    JSWeakFactory* weak_factory = weak_cell->factory();
+    if (!non_atomic_marking_state()->IsBlackOrGrey(target)) {
+      if (!weak_factory->scheduled_for_cleanup()) {
+        isolate()->native_context()->AddDirtyJSWeakFactory(
+            weak_factory, isolate(),
+            [](HeapObject* object, Object** slot, Object* target) {
+              if (target->IsHeapObject()) {
+                RecordSlot(object, slot, HeapObject::cast(target));
+              }
+            });
+        schedule_cleanup_task = true;
+      }
+      // We're modifying the pointers in JSWeakCell and JSWeakFactory during GC;
+      // thus we need to record the slots it writes. The normal write barrier is
+      // not enough, since it's disabled before GC.
+      weak_cell->Nullify(isolate(),
+                         [](HeapObject* object, Object** slot, Object* target) {
+                           if (target->IsHeapObject()) {
+                             RecordSlot(object, slot, HeapObject::cast(target));
+                           }
+                         });
+      DCHECK(weak_factory->NeedsCleanup());
+      DCHECK(weak_factory->scheduled_for_cleanup());
+    } else {
+      // The value of the JSWeakCell is alive.
+      Object** slot =
+          HeapObject::RawField(weak_cell, JSWeakCell::kTargetOffset);
+      RecordSlot(weak_cell, slot, HeapObject::cast(*slot));
+    }
+  }
+  if (schedule_cleanup_task) {
+    // TODO(marja): Make this a microtask.
+    v8::Platform* platform = V8::GetCurrentPlatform();
+    v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate());
+    platform->GetForegroundTaskRunner(v8_isolate)
+        ->PostTask(
+            std::unique_ptr<v8::Task>(new JSWeakFactoryCleanupTask(isolate())));
+  }
+}
+
 void MarkCompactCollector::AbortWeakObjects() {
   weak_objects_.transition_arrays.Clear();
   weak_objects_.ephemeron_hash_tables.Clear();
@@ -2090,6 +2147,7 @@ void MarkCompactCollector::AbortWeakObjects() {
   weak_objects_.discovered_ephemerons.Clear();
   weak_objects_.weak_references.Clear();
   weak_objects_.weak_objects_in_code.Clear();
+  weak_objects_.js_weak_cells.Clear();
 }
 
 void MarkCompactCollector::RecordRelocSlot(Code* host, RelocInfo* rinfo,
@@ -2717,7 +2775,7 @@ void LiveObjectVisitor::RecomputeLiveBytes(MemoryChunk* chunk,
 
 void MarkCompactCollector::Evacuate() {
   TRACE_GC(heap()->tracer(), GCTracer::Scope::MC_EVACUATE);
-  base::LockGuard<base::Mutex> guard(heap()->relocation_mutex());
+  base::MutexGuard guard(heap()->relocation_mutex());
 
   {
     TRACE_GC(heap()->tracer(), GCTracer::Scope::MC_EVACUATE_PROLOGUE);
@@ -2882,7 +2940,7 @@ class RememberedSetUpdatingItem : public UpdatingItem {
   void Process() override {
     TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.gc"),
                  "RememberedSetUpdatingItem::Process");
-    base::LockGuard<base::Mutex> guard(chunk_->mutex());
+    base::MutexGuard guard(chunk_->mutex());
     CodePageMemoryModificationScope memory_modification_scope(chunk_);
     UpdateUntypedPointers();
     UpdateTypedPointers();
@@ -3244,7 +3302,7 @@ void MarkCompactCollector::UpdatePointersAfterEvacuation() {
 
 void MarkCompactCollector::ReportAbortedEvacuationCandidate(
     HeapObject* failed_object, Page* page) {
-  base::LockGuard<base::Mutex> guard(&mutex_);
+  base::MutexGuard guard(&mutex_);
 
   aborted_evacuation_candidates_.push_back(std::make_pair(failed_object, page));
 }
@@ -3832,7 +3890,6 @@ void MinorMarkCompactCollector::MakeIterable(
   // remove here.
   MarkCompactCollector* full_collector = heap()->mark_compact_collector();
   Address free_start = p->area_start();
-  DCHECK_EQ(0, free_start % (32 * kPointerSize));
 
   for (auto object_and_size :
        LiveObjectRange<kGreyObjects>(p, marking_state()->bitmap(p))) {
@@ -4089,7 +4146,7 @@ class PageMarkingItem : public MarkingItem {
   void Process(YoungGenerationMarkingTask* task) override {
     TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.gc"),
                  "PageMarkingItem::Process");
-    base::LockGuard<base::Mutex> guard(chunk_->mutex());
+    base::MutexGuard guard(chunk_->mutex());
     MarkUntypedPointers(task);
     MarkTypedPointers(task);
   }
@@ -4267,7 +4324,7 @@ void MinorMarkCompactCollector::ProcessMarkingWorklist() {
 
 void MinorMarkCompactCollector::Evacuate() {
   TRACE_GC(heap()->tracer(), GCTracer::Scope::MINOR_MC_EVACUATE);
-  base::LockGuard<base::Mutex> guard(heap()->relocation_mutex());
+  base::MutexGuard guard(heap()->relocation_mutex());
 
   {
     TRACE_GC(heap()->tracer(), GCTracer::Scope::MINOR_MC_EVACUATE_PROLOGUE);

@@ -123,7 +123,8 @@ AllocationResult Heap::AllocatePartialMap(InstanceType instance_type,
   // Map::cast cannot be used due to uninitialized map field.
   Map* map = reinterpret_cast<Map*>(result);
   map->set_map_after_allocation(
-      reinterpret_cast<Map*>(root(RootIndex::kMetaMap)), SKIP_WRITE_BARRIER);
+      reinterpret_cast<Map*>(isolate()->root(RootIndex::kMetaMap)),
+      SKIP_WRITE_BARRIER);
   map->set_instance_type(instance_type);
   map->set_instance_size(instance_size);
   // Initialize to only containing tagged fields.
@@ -292,7 +293,7 @@ bool Heap::CreateInitialMaps() {
     const StructTable& entry = struct_table[i];
     Map* map;
     if (!AllocatePartialMap(entry.type, entry.size).To(&map)) return false;
-    roots_[entry.index] = map;
+    roots_table()[entry.index] = map;
   }
 
   // Allocate the empty enum cache.
@@ -334,7 +335,7 @@ bool Heap::CreateInitialMaps() {
   FinalizePartialMap(roots.the_hole_map());
   for (unsigned i = 0; i < arraysize(struct_table); ++i) {
     const StructTable& entry = struct_table[i];
-    FinalizePartialMap(Map::cast(roots_[entry.index]));
+    FinalizePartialMap(Map::cast(roots_table()[entry.index]));
   }
 
   {  // Map allocation
@@ -389,7 +390,7 @@ bool Heap::CreateInitialMaps() {
       // Mark cons string maps as unstable, because their objects can change
       // maps during GC.
       if (StringShape(entry.type).IsCons()) map->mark_unstable();
-      roots_[entry.index] = map;
+      roots_table()[entry.index] = map;
     }
 
     {  // Create a separate external one byte string map for native sources.
@@ -625,6 +626,9 @@ void Heap::CreateInitialObjects() {
   set_hash_seed(*factory->NewByteArray(kInt64Size, TENURED));
   InitializeHashSeed();
 
+  // There's no "current microtask" in the beginning.
+  set_current_microtask(roots.undefined_value());
+
   // Allocate cache for single character one byte strings.
   set_single_character_string_cache(
       *factory->NewFixedArray(String::kMaxOneByteCharCode + 1, TENURED));
@@ -635,7 +639,7 @@ void Heap::CreateInitialObjects() {
   for (unsigned i = 0; i < arraysize(constant_string_table); i++) {
     Handle<String> str =
         factory->InternalizeUtf8String(constant_string_table[i].contents);
-    roots_[constant_string_table[i].index] = *str;
+    roots_table()[constant_string_table[i].index] = *str;
   }
 
   // Allocate
@@ -705,7 +709,7 @@ void Heap::CreateInitialObjects() {
   {                                                                 \
     Handle<Symbol> symbol(                                          \
         isolate()->factory()->NewPrivateSymbol(TENURED_READ_ONLY)); \
-    roots_[RootIndex::k##name] = *symbol;                           \
+    roots_table()[RootIndex::k##name] = *symbol;                    \
   }
     PRIVATE_SYMBOL_LIST_GENERATOR(SYMBOL_INIT, /* not used */)
 #undef SYMBOL_INIT
@@ -718,7 +722,7 @@ void Heap::CreateInitialObjects() {
   Handle<String> name##d =                                                \
       factory->NewStringFromStaticChars(#description, TENURED_READ_ONLY); \
   name->set_name(*name##d);                                               \
-  roots_[RootIndex::k##name] = *name;
+  roots_table()[RootIndex::k##name] = *name;
     PUBLIC_SYMBOL_LIST_GENERATOR(SYMBOL_INIT, /* not used */)
 #undef SYMBOL_INIT
 
@@ -728,7 +732,7 @@ void Heap::CreateInitialObjects() {
       factory->NewStringFromStaticChars(#description, TENURED_READ_ONLY); \
   name->set_is_well_known_symbol(true);                                   \
   name->set_name(*name##d);                                               \
-  roots_[RootIndex::k##name] = *name;
+  roots_table()[RootIndex::k##name] = *name;
     WELL_KNOWN_SYMBOL_LIST_GENERATOR(SYMBOL_INIT, /* not used */)
 #undef SYMBOL_INIT
 
@@ -736,8 +740,8 @@ void Heap::CreateInitialObjects() {
     to_string_tag_symbol->set_is_interesting_symbol(true);
   }
 
-  Handle<NameDictionary> empty_property_dictionary =
-      NameDictionary::New(isolate(), 1, TENURED, USE_CUSTOM_MINIMUM_CAPACITY);
+  Handle<NameDictionary> empty_property_dictionary = NameDictionary::New(
+      isolate(), 1, TENURED_READ_ONLY, USE_CUSTOM_MINIMUM_CAPACITY);
   DCHECK(!empty_property_dictionary->HasSufficientCapacityToAdd(1));
   set_empty_property_dictionary(*empty_property_dictionary);
 
@@ -839,6 +843,14 @@ void Heap::CreateInitialObjects() {
   cell->set_value(Smi::FromInt(Isolate::kProtectorValid));
   set_array_iterator_protector(*cell);
 
+  cell = factory->NewPropertyCell(factory->empty_string());
+  cell->set_value(Smi::FromInt(Isolate::kProtectorValid));
+  set_map_iterator_protector(*cell);
+
+  cell = factory->NewPropertyCell(factory->empty_string());
+  cell->set_value(Smi::FromInt(Isolate::kProtectorValid));
+  set_set_iterator_protector(*cell);
+
   Handle<Cell> is_concat_spreadable_cell = factory->NewCell(
       handle(Smi::FromInt(Isolate::kProtectorValid), isolate()));
   set_is_concat_spreadable_protector(*is_concat_spreadable_cell);
@@ -908,15 +920,15 @@ void Heap::CreateInternalAccessorInfoObjects() {
 
 #define INIT_ACCESSOR_INFO(_, accessor_name, AccessorName, ...) \
   acessor_info = Accessors::Make##AccessorName##Info(isolate);  \
-  roots_[RootIndex::k##AccessorName##Accessor] = *acessor_info;
+  roots_table()[RootIndex::k##AccessorName##Accessor] = *acessor_info;
   ACCESSOR_INFO_LIST_GENERATOR(INIT_ACCESSOR_INFO, /* not used */)
 #undef INIT_ACCESSOR_INFO
 
 #define INIT_SIDE_EFFECT_FLAG(_, accessor_name, AccessorName, GetterType, \
                               SetterType)                                 \
-  AccessorInfo::cast(roots_[RootIndex::k##AccessorName##Accessor])        \
+  AccessorInfo::cast(roots_table()[RootIndex::k##AccessorName##Accessor]) \
       ->set_getter_side_effect_type(SideEffectType::GetterType);          \
-  AccessorInfo::cast(roots_[RootIndex::k##AccessorName##Accessor])        \
+  AccessorInfo::cast(roots_table()[RootIndex::k##AccessorName##Accessor]) \
       ->set_setter_side_effect_type(SideEffectType::SetterType);
   ACCESSOR_INFO_LIST_GENERATOR(INIT_SIDE_EFFECT_FLAG, /* not used */)
 #undef INIT_SIDE_EFFECT_FLAG

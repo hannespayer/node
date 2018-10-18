@@ -21,6 +21,7 @@ namespace internal {
 class EvacuationJobTraits;
 class HeapObjectVisitor;
 class ItemParallelJob;
+class JSWeakCell;
 class MigrationObserver;
 class RecordMigratedSlotVisitor;
 class UpdatingItem;
@@ -76,13 +77,9 @@ class MarkingStateBase {
 class MarkBitCellIterator {
  public:
   MarkBitCellIterator(MemoryChunk* chunk, Bitmap* bitmap) : chunk_(chunk) {
-    DCHECK(Bitmap::IsCellAligned(
-        chunk_->AddressToMarkbitIndex(chunk_->area_start())));
-    DCHECK(Bitmap::IsCellAligned(
-        chunk_->AddressToMarkbitIndex(chunk_->area_end())));
     last_cell_index_ =
         Bitmap::IndexToCell(chunk_->AddressToMarkbitIndex(chunk_->area_end()));
-    cell_base_ = chunk_->area_start();
+    cell_base_ = chunk_->address();
     cell_index_ =
         Bitmap::IndexToCell(chunk_->AddressToMarkbitIndex(cell_base_));
     cells_ = bitmap->cells();
@@ -341,7 +338,10 @@ class IncrementalMarkingState final
     : public MarkingStateBase<IncrementalMarkingState, AccessMode::ATOMIC> {
  public:
   Bitmap* bitmap(const MemoryChunk* chunk) const {
-    return Bitmap::FromAddress(chunk->address() + MemoryChunk::kHeaderSize);
+    DCHECK_EQ(reinterpret_cast<intptr_t>(&chunk->marking_bitmap_) -
+                  reinterpret_cast<intptr_t>(chunk),
+              MemoryChunk::kMarkBitmapOffset);
+    return chunk->marking_bitmap_;
   }
 
   // Concurrent marking uses local live bytes.
@@ -362,7 +362,10 @@ class MajorAtomicMarkingState final
     : public MarkingStateBase<MajorAtomicMarkingState, AccessMode::ATOMIC> {
  public:
   Bitmap* bitmap(const MemoryChunk* chunk) const {
-    return Bitmap::FromAddress(chunk->address() + MemoryChunk::kHeaderSize);
+    DCHECK_EQ(reinterpret_cast<intptr_t>(&chunk->marking_bitmap_) -
+                  reinterpret_cast<intptr_t>(chunk),
+              MemoryChunk::kMarkBitmapOffset);
+    return chunk->marking_bitmap_;
   }
 
   void IncrementLiveBytes(MemoryChunk* chunk, intptr_t by) {
@@ -383,7 +386,10 @@ class MajorNonAtomicMarkingState final
                               AccessMode::NON_ATOMIC> {
  public:
   Bitmap* bitmap(const MemoryChunk* chunk) const {
-    return Bitmap::FromAddress(chunk->address() + MemoryChunk::kHeaderSize);
+    DCHECK_EQ(reinterpret_cast<intptr_t>(&chunk->marking_bitmap_) -
+                  reinterpret_cast<intptr_t>(chunk),
+              MemoryChunk::kMarkBitmapOffset);
+    return chunk->marking_bitmap_;
   }
 
   void IncrementLiveBytes(MemoryChunk* chunk, intptr_t by) {
@@ -436,6 +442,8 @@ struct WeakObjects {
   // object. Optimize this by adding a different storage for old space.
   Worklist<std::pair<HeapObject*, HeapObjectReference**>, 64> weak_references;
   Worklist<std::pair<HeapObject*, Code*>, 64> weak_objects_in_code;
+
+  Worklist<JSWeakCell*, 64> js_weak_cells;
 };
 
 struct EphemeronMarking {
@@ -670,6 +678,10 @@ class MarkCompactCollector final : public MarkCompactCollectorBase {
                                             std::make_pair(object, code));
   }
 
+  void AddWeakCell(JSWeakCell* weak_cell) {
+    weak_objects_.js_weak_cells.Push(kMainThread, weak_cell);
+  }
+
   void AddNewlyDiscovered(HeapObject* object) {
     if (ephemeron_marking_.newly_discovered_overflowed) return;
 
@@ -812,6 +824,11 @@ class MarkCompactCollector final : public MarkCompactCollectorBase {
   // the dead map via weak cell, then this function also clears the map
   // transition.
   void ClearWeakReferences();
+
+  // Goes through the list of encountered JSWeakCells and clears those with dead
+  // values.
+  void ClearJSWeakCells();
+
   void AbortWeakObjects();
 
   // Starts sweeping of spaces by contributing on the main thread and setting
@@ -918,6 +935,7 @@ class MarkingVisitor final
   V8_INLINE int VisitJSTypedArray(Map* map, JSTypedArray* object);
   V8_INLINE int VisitMap(Map* map, Map* object);
   V8_INLINE int VisitTransitionArray(Map* map, TransitionArray* object);
+  V8_INLINE int VisitJSWeakCell(Map* map, JSWeakCell* object);
 
   // ObjectVisitor implementation.
   V8_INLINE void VisitPointer(HeapObject* host, Object** p) final;

@@ -814,7 +814,13 @@ TF_BUILTIN(ObjectPrototypeIsPrototypeOf, ObjectBuiltinsAssembler) {
 }
 
 // ES #sec-object.prototype.tostring
-TF_BUILTIN(ObjectPrototypeToString, ObjectBuiltinsAssembler) {
+TF_BUILTIN(ObjectPrototypeToString, CodeStubAssembler) {
+  TNode<Object> receiver = CAST(Parameter(Descriptor::kReceiver));
+  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  Return(CallBuiltin(Builtins::kObjectToString, context, receiver));
+}
+
+TF_BUILTIN(ObjectToString, ObjectBuiltinsAssembler) {
   Label checkstringtag(this), if_apiobject(this, Label::kDeferred),
       if_arguments(this), if_array(this), if_boolean(this), if_date(this),
       if_error(this), if_function(this), if_number(this, Label::kDeferred),
@@ -1140,7 +1146,7 @@ TF_BUILTIN(CreateObjectWithoutProperties, ObjectBuiltinsAssembler) {
     TNode<MaybeObject> maybe_map = LoadMaybeWeakObjectField(
         prototype_info, PrototypeInfo::kObjectCreateMapOffset);
     GotoIf(IsStrongReferenceTo(maybe_map, UndefinedConstant()), &call_runtime);
-    map.Bind(ToWeakHeapObject(maybe_map, &call_runtime));
+    map.Bind(GetHeapObjectAssumeWeak(maybe_map, &call_runtime));
     Goto(&instantiate_map);
   }
 
@@ -1236,7 +1242,7 @@ TF_BUILTIN(ObjectCreate, ObjectBuiltinsAssembler) {
           prototype_info, PrototypeInfo::kObjectCreateMapOffset);
       GotoIf(IsStrongReferenceTo(maybe_map, UndefinedConstant()),
              &call_runtime);
-      map.Bind(ToWeakHeapObject(maybe_map, &call_runtime));
+      map.Bind(GetHeapObjectAssumeWeak(maybe_map, &call_runtime));
       Goto(&instantiate_map);
     }
 

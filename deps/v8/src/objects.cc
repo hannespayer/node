@@ -49,7 +49,7 @@
 #include "src/lookup-inl.h"
 #include "src/macro-assembler.h"
 #include "src/map-updater.h"
-#include "src/messages.h"
+#include "src/message-template.h"
 #include "src/objects-body-descriptors-inl.h"
 #include "src/objects/api-callbacks.h"
 #include "src/objects/arguments-inl.h"
@@ -79,7 +79,10 @@
 #include "src/objects/js-regexp-string-iterator.h"
 #ifdef V8_INTL_SUPPORT
 #include "src/objects/js-relative-time-format.h"
+#include "src/objects/js-segment-iterator.h"
+#include "src/objects/js-segmenter.h"
 #endif  // V8_INTL_SUPPORT
+#include "src/objects/js-weak-refs-inl.h"
 #include "src/objects/literal-objects-inl.h"
 #include "src/objects/map.h"
 #include "src/objects/microtask-inl.h"
@@ -503,9 +506,9 @@ MaybeHandle<Object> Object::ConvertToLength(Isolate* isolate,
 }
 
 // static
-MaybeHandle<Object> Object::ConvertToIndex(
-    Isolate* isolate, Handle<Object> input,
-    MessageTemplate::Template error_index) {
+MaybeHandle<Object> Object::ConvertToIndex(Isolate* isolate,
+                                           Handle<Object> input,
+                                           MessageTemplate error_index) {
   if (input->IsUndefined(isolate)) return handle(Smi::kZero, isolate);
   ASSIGN_RETURN_ON_EXCEPTION(isolate, input, ToNumber(isolate, input), Object);
   if (input->IsSmi() && Smi::ToInt(*input) >= 0) return input;
@@ -1402,6 +1405,8 @@ int JSObject::GetHeaderSize(InstanceType type,
       return JSObject::kHeaderSize;
     case JS_GENERATOR_OBJECT_TYPE:
       return JSGeneratorObject::kSize;
+    case JS_ASYNC_FUNCTION_OBJECT_TYPE:
+      return JSAsyncFunctionObject::kSize;
     case JS_ASYNC_GENERATOR_OBJECT_TYPE:
       return JSAsyncGeneratorObject::kSize;
     case JS_GLOBAL_PROXY_TYPE:
@@ -1437,6 +1442,10 @@ int JSObject::GetHeaderSize(InstanceType type,
     case JS_MAP_KEY_VALUE_ITERATOR_TYPE:
     case JS_MAP_VALUE_ITERATOR_TYPE:
       return JSMapIterator::kSize;
+    case JS_WEAK_CELL_TYPE:
+      return JSWeakCell::kSize;
+    case JS_WEAK_FACTORY_TYPE:
+      return JSWeakFactory::kSize;
     case JS_WEAK_MAP_TYPE:
       return JSWeakMap::kSize;
     case JS_WEAK_SET_TYPE:
@@ -1476,6 +1485,10 @@ int JSObject::GetHeaderSize(InstanceType type,
       return JSPluralRules::kSize;
     case JS_INTL_RELATIVE_TIME_FORMAT_TYPE:
       return JSRelativeTimeFormat::kSize;
+    case JS_INTL_SEGMENT_ITERATOR_TYPE:
+      return JSSegmentIterator::kSize;
+    case JS_INTL_SEGMENTER_TYPE:
+      return JSSegmenter::kSize;
 #endif  // V8_INTL_SUPPORT
     case WASM_GLOBAL_TYPE:
       return WasmGlobalObject::kSize;
@@ -2934,6 +2947,10 @@ void JSObject::JSObjectShortPrint(StringStream* accumulator) {
       accumulator->Add("<JSGenerator>");
       break;
     }
+    case JS_ASYNC_FUNCTION_OBJECT_TYPE: {
+      accumulator->Add("<JSAsyncFunctionObject>");
+      break;
+    }
     case JS_ASYNC_GENERATOR_OBJECT_TYPE: {
       accumulator->Add("<JS AsyncGenerator>");
       break;
@@ -3195,6 +3212,7 @@ VisitorId Map::GetVisitorId(Map* map) {
     case JS_ASYNC_FROM_SYNC_ITERATOR_TYPE:
     case JS_CONTEXT_EXTENSION_OBJECT_TYPE:
     case JS_GENERATOR_OBJECT_TYPE:
+    case JS_ASYNC_FUNCTION_OBJECT_TYPE:
     case JS_ASYNC_GENERATOR_OBJECT_TYPE:
     case JS_MODULE_NAMESPACE_TYPE:
     case JS_VALUE_TYPE:
@@ -3216,6 +3234,8 @@ VisitorId Map::GetVisitorId(Map* map) {
     case JS_PROMISE_TYPE:
     case JS_REGEXP_TYPE:
     case JS_REGEXP_STRING_ITERATOR_TYPE:
+    case JS_WEAK_FACTORY_CLEANUP_ITERATOR_TYPE:
+    case JS_WEAK_FACTORY_TYPE:
 #ifdef V8_INTL_SUPPORT
     case JS_INTL_V8_BREAK_ITERATOR_TYPE:
     case JS_INTL_COLLATOR_TYPE:
@@ -3225,6 +3245,8 @@ VisitorId Map::GetVisitorId(Map* map) {
     case JS_INTL_NUMBER_FORMAT_TYPE:
     case JS_INTL_PLURAL_RULES_TYPE:
     case JS_INTL_RELATIVE_TIME_FORMAT_TYPE:
+    case JS_INTL_SEGMENT_ITERATOR_TYPE:
+    case JS_INTL_SEGMENTER_TYPE:
 #endif  // V8_INTL_SUPPORT
     case WASM_EXCEPTION_TYPE:
     case WASM_GLOBAL_TYPE:
@@ -3236,6 +3258,9 @@ VisitorId Map::GetVisitorId(Map* map) {
     case JS_API_OBJECT_TYPE:
     case JS_SPECIAL_API_OBJECT_TYPE:
       return kVisitJSApiObject;
+
+    case JS_WEAK_CELL_TYPE:
+      return kVisitJSWeakCell;
 
     case FILLER_TYPE:
     case FOREIGN_TYPE:
@@ -5254,6 +5279,15 @@ Maybe<bool> Object::CannotCreateProperty(Isolate* isolate,
 Maybe<bool> Object::WriteToReadOnlyProperty(LookupIterator* it,
                                             Handle<Object> value,
                                             ShouldThrow should_throw) {
+  if (it->IsFound() && !it->HolderIsReceiver()) {
+    // "Override mistake" attempted, record a use count to track this per
+    // v8:8175
+    v8::Isolate::UseCounterFeature feature =
+        should_throw == kThrowOnError
+            ? v8::Isolate::kAttemptOverrideReadOnlyOnPrototypeStrict
+            : v8::Isolate::kAttemptOverrideReadOnlyOnPrototypeSloppy;
+    it->isolate()->CountUsage(feature);
+  }
   return WriteToReadOnlyProperty(it->isolate(), it->GetReceiver(),
                                  it->GetName(), value, should_throw);
 }
@@ -6697,16 +6731,14 @@ Handle<NumberDictionary> JSObject::NormalizeElements(Handle<JSObject> object) {
 
 namespace {
 
-Object* SetHashAndUpdateProperties(Isolate* isolate, HeapObject* properties,
-                                   int hash) {
+Object* SetHashAndUpdateProperties(HeapObject* properties, int hash) {
   DCHECK_NE(PropertyArray::kNoHashSentinel, hash);
   DCHECK(PropertyArray::HashField::is_valid(hash));
 
-  Heap* heap = isolate->heap();
-  ReadOnlyRoots roots(heap);
+  ReadOnlyRoots roots = properties->GetReadOnlyRoots();
   if (properties == roots.empty_fixed_array() ||
       properties == roots.empty_property_array() ||
-      properties == heap->empty_property_dictionary()) {
+      properties == roots.empty_property_dictionary()) {
     return Smi::FromInt(hash);
   }
 
@@ -6726,7 +6758,7 @@ Object* SetHashAndUpdateProperties(Isolate* isolate, HeapObject* properties,
   return properties;
 }
 
-int GetIdentityHashHelper(Isolate* isolate, JSReceiver* object) {
+int GetIdentityHashHelper(JSReceiver* object) {
   DisallowHeapAllocation no_gc;
   Object* properties = object->raw_properties_or_hash();
   if (properties->IsSmi()) {
@@ -6746,11 +6778,9 @@ int GetIdentityHashHelper(Isolate* isolate, JSReceiver* object) {
   }
 
 #ifdef DEBUG
-  FixedArray* empty_fixed_array = ReadOnlyRoots(isolate).empty_fixed_array();
-  FixedArray* empty_property_dictionary =
-      isolate->heap()->empty_property_dictionary();
-  DCHECK(properties == empty_fixed_array ||
-         properties == empty_property_dictionary);
+  ReadOnlyRoots roots = object->GetReadOnlyRoots();
+  DCHECK(properties == roots.empty_fixed_array() ||
+         properties == roots.empty_property_dictionary());
 #endif
 
   return PropertyArray::kNoHashSentinel;
@@ -6764,7 +6794,7 @@ void JSReceiver::SetIdentityHash(int hash) {
 
   HeapObject* existing_properties = HeapObject::cast(raw_properties_or_hash());
   Object* new_properties =
-      SetHashAndUpdateProperties(GetIsolate(), existing_properties, hash);
+      SetHashAndUpdateProperties(existing_properties, hash);
   set_raw_properties_or_hash(new_properties);
 }
 
@@ -6773,25 +6803,24 @@ void JSReceiver::SetProperties(HeapObject* properties) {
                      PropertyArray::cast(properties)->length() == 0,
                  properties == GetReadOnlyRoots().empty_property_array());
   DisallowHeapAllocation no_gc;
-  Isolate* isolate = GetIsolate();
-  int hash = GetIdentityHashHelper(isolate, this);
+  int hash = GetIdentityHashHelper(this);
   Object* new_properties = properties;
 
   // TODO(cbruni): Make GetIdentityHashHelper return a bool so that we
   // don't have to manually compare against kNoHashSentinel.
   if (hash != PropertyArray::kNoHashSentinel) {
-    new_properties = SetHashAndUpdateProperties(isolate, properties, hash);
+    new_properties = SetHashAndUpdateProperties(properties, hash);
   }
 
   set_raw_properties_or_hash(new_properties);
 }
 
-Object* JSReceiver::GetIdentityHash(Isolate* isolate) {
+Object* JSReceiver::GetIdentityHash() {
   DisallowHeapAllocation no_gc;
 
-  int hash = GetIdentityHashHelper(isolate, this);
+  int hash = GetIdentityHashHelper(this);
   if (hash == PropertyArray::kNoHashSentinel) {
-    return ReadOnlyRoots(isolate).undefined_value();
+    return GetReadOnlyRoots().undefined_value();
   }
 
   return Smi::FromInt(hash);
@@ -6810,9 +6839,9 @@ Smi* JSReceiver::CreateIdentityHash(Isolate* isolate, JSReceiver* key) {
 Smi* JSReceiver::GetOrCreateIdentityHash(Isolate* isolate) {
   DisallowHeapAllocation no_gc;
 
-  Object* hash_obj = GetIdentityHash(isolate);
-  if (!hash_obj->IsUndefined(isolate)) {
-    return Smi::cast(hash_obj);
+  int hash = GetIdentityHashHelper(this);
+  if (hash != PropertyArray::kNoHashSentinel) {
+    return Smi::FromInt(hash);
   }
 
   return JSReceiver::CreateIdentityHash(isolate, this);
@@ -8551,7 +8580,7 @@ Maybe<bool> JSObject::PreventExtensionsWithTransition(
 
   if (object->map()->has_named_interceptor() ||
       object->map()->has_indexed_interceptor()) {
-    MessageTemplate::Template message = MessageTemplate::kNone;
+    MessageTemplate message = MessageTemplate::kNone;
     switch (attrs) {
       case NONE:
         message = MessageTemplate::kCannotPreventExt;
@@ -11381,6 +11410,111 @@ Handle<FixedArray> String::CalculateLineEnds(Isolate* isolate,
   return array;
 }
 
+namespace {
+
+template <typename sinkchar>
+void WriteFixedArrayToFlat(FixedArray* fixed_array, int length,
+                           String* separator, sinkchar* sink, int sink_length) {
+  DisallowHeapAllocation no_allocation;
+  CHECK_GT(length, 0);
+  CHECK_LE(length, fixed_array->length());
+#ifdef DEBUG
+  sinkchar* sink_end = sink + sink_length;
+#endif
+
+  const int separator_length = separator->length();
+  const bool use_one_byte_separator_fast_path =
+      separator_length == 1 && sizeof(sinkchar) == 1 &&
+      StringShape(separator).IsSequentialOneByte();
+  uint8_t separator_one_char;
+  if (use_one_byte_separator_fast_path) {
+    CHECK(StringShape(separator).IsSequentialOneByte());
+    CHECK_EQ(separator->length(), 1);
+    separator_one_char = SeqOneByteString::cast(separator)->GetChars()[0];
+  }
+
+  uint32_t num_separators = 0;
+  for (int i = 0; i < length; i++) {
+    Object* element = fixed_array->get(i);
+    const bool element_is_separator_sequence = element->IsSmi();
+
+    // If element is a Smi, it represents the number of separators to write.
+    if (V8_UNLIKELY(element_is_separator_sequence)) {
+      CHECK(element->ToUint32(&num_separators));
+      // Verify that Smis (number of separators) only occur when necessary:
+      //   1) at the beginning
+      //   2) at the end
+      //   3) when the number of separators > 1
+      //     - It is assumed that consecutive Strings will have one separator,
+      //       so there is no need for a Smi.
+      DCHECK(i == 0 || i == length - 1 || num_separators > 1);
+    }
+
+    // Write separator(s) if necessary.
+    if (num_separators > 0 && separator_length > 0) {
+      // TODO(pwong): Consider doubling strategy employed by runtime-strings.cc
+      //              WriteRepeatToFlat().
+      // Fast path for single character, single byte separators.
+      if (use_one_byte_separator_fast_path) {
+        DCHECK_LE(sink + num_separators, sink_end);
+        memset(sink, separator_one_char, num_separators);
+        DCHECK_EQ(separator_length, 1);
+        sink += num_separators;
+      } else {
+        for (uint32_t j = 0; j < num_separators; j++) {
+          DCHECK_LE(sink + separator_length, sink_end);
+          String::WriteToFlat(separator, sink, 0, separator_length);
+          sink += separator_length;
+        }
+      }
+    }
+
+    if (V8_UNLIKELY(element_is_separator_sequence)) {
+      num_separators = 0;
+    } else {
+      DCHECK(element->IsString());
+      String* string = String::cast(element);
+      const int string_length = string->length();
+
+      DCHECK(string_length == 0 || sink < sink_end);
+      String::WriteToFlat(string, sink, 0, string_length);
+      sink += string_length;
+
+      // Next string element, needs at least one separator preceding it.
+      num_separators = 1;
+    }
+  }
+
+  // Verify we have written to the end of the sink.
+  DCHECK_EQ(sink, sink_end);
+}
+
+}  // namespace
+
+// static
+String* JSArray::ArrayJoinConcatToSequentialString(Isolate* isolate,
+                                                   FixedArray* fixed_array,
+                                                   intptr_t length,
+                                                   String* separator,
+                                                   String* dest) {
+  DisallowHeapAllocation no_allocation;
+  DisallowJavascriptExecution no_js(isolate);
+  DCHECK(fixed_array->IsFixedArray());
+  DCHECK(StringShape(dest).IsSequentialOneByte() ||
+         StringShape(dest).IsSequentialTwoByte());
+
+  if (StringShape(dest).IsSequentialOneByte()) {
+    WriteFixedArrayToFlat(fixed_array, static_cast<int>(length), separator,
+                          SeqOneByteString::cast(dest)->GetChars(),
+                          dest->length());
+  } else {
+    DCHECK(StringShape(dest).IsSequentialTwoByte());
+    WriteFixedArrayToFlat(fixed_array, static_cast<int>(length), separator,
+                          SeqTwoByteString::cast(dest)->GetChars(),
+                          dest->length());
+  }
+  return dest;
+}
 
 // Compares the contents of two strings by reading and comparing
 // int-sized blocks of characters.
@@ -12984,11 +13118,15 @@ bool CanSubclassHaveInobjectProperties(InstanceType instance_type) {
     case JS_INTL_COLLATOR_TYPE:
     case JS_INTL_DATE_TIME_FORMAT_TYPE:
     case JS_INTL_LIST_FORMAT_TYPE:
+    case JS_INTL_LOCALE_TYPE:
     case JS_INTL_NUMBER_FORMAT_TYPE:
     case JS_INTL_PLURAL_RULES_TYPE:
     case JS_INTL_RELATIVE_TIME_FORMAT_TYPE:
+    case JS_INTL_SEGMENT_ITERATOR_TYPE:
+    case JS_INTL_SEGMENTER_TYPE:
     case JS_INTL_V8_BREAK_ITERATOR_TYPE:
 #endif
+    case JS_ASYNC_FUNCTION_OBJECT_TYPE:
     case JS_ASYNC_GENERATOR_OBJECT_TYPE:
     case JS_MAP_TYPE:
     case JS_MESSAGE_OBJECT_TYPE:
@@ -14064,21 +14202,19 @@ void SharedFunctionInfo::InitFromFunctionLiteral(
     // value after compiling, but avoid overwriting values set manually by the
     // bootstrapper.
     shared_info->set_length(SharedFunctionInfo::kInvalidLength);
-    if (FLAG_preparser_scope_analysis) {
-      ProducedPreParsedScopeData* scope_data =
-          lit->produced_preparsed_scope_data();
-      if (scope_data != nullptr) {
-        Handle<PreParsedScopeData> pre_parsed_scope_data;
-        if (scope_data->Serialize(shared_info->GetIsolate())
-                .ToHandle(&pre_parsed_scope_data)) {
-          Handle<UncompiledData> data =
-              isolate->factory()->NewUncompiledDataWithPreParsedScope(
-                  lit->inferred_name(), lit->start_position(),
-                  lit->end_position(), lit->function_literal_id(),
-                  pre_parsed_scope_data);
-          shared_info->set_uncompiled_data(*data);
-          needs_position_info = false;
-        }
+    ProducedPreParsedScopeData* scope_data =
+        lit->produced_preparsed_scope_data();
+    if (scope_data != nullptr) {
+      Handle<PreParsedScopeData> pre_parsed_scope_data;
+      if (scope_data->Serialize(shared_info->GetIsolate())
+              .ToHandle(&pre_parsed_scope_data)) {
+        Handle<UncompiledData> data =
+            isolate->factory()->NewUncompiledDataWithPreParsedScope(
+                lit->inferred_name(), lit->start_position(),
+                lit->end_position(), lit->function_literal_id(),
+                pre_parsed_scope_data);
+        shared_info->set_uncompiled_data(*data);
+        needs_position_info = false;
       }
     }
   }
@@ -14487,12 +14623,12 @@ bool Code::IsIsolateIndependent(Isolate* isolate) {
   bool is_process_independent = true;
   for (RelocIterator it(this, mode_mask); !it.done(); it.next()) {
 #if defined(V8_TARGET_ARCH_X64) || defined(V8_TARGET_ARCH_ARM64) || \
-    defined(V8_TARGET_ARCH_ARM)
-    // On X64, ARM, ARM64 we emit relative builtin-to-builtin jumps for isolate
-    // independent builtins in the snapshot. They are later rewritten as
-    // pc-relative jumps to the off-heap instruction stream and are thus
-    // process-independent.
-    // See also: FinalizeEmbeddedCodeTargets.
+    defined(V8_TARGET_ARCH_ARM) || defined(V8_TARGET_ARCH_MIPS) ||  \
+    defined(V8_TARGET_ARCH_IA32)
+    // On these platforms we emit relative builtin-to-builtin
+    // jumps for isolate independent builtins in the snapshot. They are later
+    // rewritten as pc-relative jumps to the off-heap instruction stream and are
+    // thus process-independent. See also: FinalizeEmbeddedCodeTargets.
     if (RelocInfo::IsCodeTargetMode(it.rinfo()->rmode())) {
       Address target_address = it.rinfo()->target_address();
       if (InstructionStream::PcIsOffHeap(isolate, target_address)) continue;
@@ -17666,9 +17802,12 @@ Handle<Derived> BaseNameDictionary<Derived, Shape>::Add(
   // SetNextEnumerationIndex.
   int index = dictionary->NextEnumerationIndex();
   details = details.set_index(index);
+  dictionary = AddNoUpdateNextEnumerationIndex(isolate, dictionary, key, value,
+                                               details, entry_out);
+  // Update enumeration index here in order to avoid potential modification of
+  // the canonical empty dictionary which lives in read only space.
   dictionary->SetNextEnumerationIndex(index + 1);
-  return AddNoUpdateNextEnumerationIndex(isolate, dictionary, key, value,
-                                         details, entry_out);
+  return dictionary;
 }
 
 template <typename Derived, typename Shape>
@@ -18811,6 +18950,58 @@ BaseNameDictionary<NameDictionary, NameDictionaryShape>::IterationIndices(
 template void
 BaseNameDictionary<NameDictionary, NameDictionaryShape>::CollectKeysTo(
     Handle<NameDictionary> dictionary, KeyAccumulator* keys);
+
+void JSWeakFactoryCleanupTask::Run() {
+  DCHECK(FLAG_harmony_weak_refs);
+  HandleScope handle_scope(isolate_);
+  Handle<Context> native_context =
+      Handle<Context>::cast(Utils::OpenPersistent(native_context_));
+  v8::Local<v8::Context> context_local = Utils::ToLocal(native_context);
+  v8::Context::Scope context_scope(context_local);
+
+  while (native_context->dirty_js_weak_factories()->IsJSWeakFactory()) {
+    Handle<JSWeakFactory> weak_factory =
+        handle(JSWeakFactory::cast(native_context->dirty_js_weak_factories()),
+               isolate_);
+    native_context->set_dirty_js_weak_factories(weak_factory->next());
+    weak_factory->set_next(ReadOnlyRoots(isolate_).undefined_value());
+    weak_factory->set_scheduled_for_cleanup(false);
+
+    // TODO(marja): After WeakCell.cleanup() is added, it's possible that it's
+    // called for something already in cleared_cells list. In that case, we
+    // shouldn't call the user's cleanup function.
+
+    // Construct the iterator.
+    Handle<JSWeakFactoryCleanupIterator> iterator;
+    {
+      Handle<Map> cleanup_iterator_map(
+          native_context->js_weak_factory_cleanup_iterator_map(), isolate_);
+      iterator = Handle<JSWeakFactoryCleanupIterator>::cast(
+          isolate_->factory()->NewJSObjectFromMap(
+              cleanup_iterator_map, NOT_TENURED,
+              Handle<AllocationSite>::null()));
+      iterator->set_factory(*weak_factory);
+    }
+    Handle<Object> cleanup(weak_factory->cleanup(), isolate_);
+
+    v8::TryCatch try_catch(reinterpret_cast<v8::Isolate*>(isolate_));
+    v8::Local<v8::Value> result;
+    MaybeHandle<Object> exception;
+    Handle<Object> args[] = {iterator};
+    bool has_pending_exception = !ToLocal<Value>(
+        Execution::TryCall(
+            isolate_, cleanup,
+            handle(ReadOnlyRoots(isolate_).undefined_value(), isolate_), 1,
+            args, Execution::MessageHandling::kReport, &exception,
+            Execution::Target::kCallable),
+        &result);
+    // TODO(marja): (spec): What if there's an exception?
+    USE(has_pending_exception);
+
+    // TODO(marja): (spec): Should the iterator be invalidated after the
+    // function returns?
+  }
+}
 
 }  // namespace internal
 }  // namespace v8

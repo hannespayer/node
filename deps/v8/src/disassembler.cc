@@ -16,6 +16,7 @@
 #include "src/disasm.h"
 #include "src/ic/ic.h"
 #include "src/instruction-stream.h"
+#include "src/isolate-data.h"
 #include "src/macro-assembler.h"
 #include "src/objects-inl.h"
 #include "src/snapshot/serializer-common.h"
@@ -55,13 +56,13 @@ class V8NameConverter: public disasm::NameConverter {
 
 void V8NameConverter::InitExternalRefsCache() const {
   ExternalReferenceTable* external_reference_table =
-      isolate_->heap()->external_reference_table();
+      isolate_->external_reference_table();
   if (!external_reference_table->is_initialized()) return;
 
   base::AddressRegion addressable_region =
       isolate_->root_register_addressable_region();
   Address roots_start =
-      reinterpret_cast<Address>(isolate_->heap()->roots_array_start());
+      reinterpret_cast<Address>(isolate_->roots_array_start());
 
   for (uint32_t i = 0; i < external_reference_table->size(); i++) {
     Address address = external_reference_table->address(i);
@@ -116,13 +117,12 @@ const char* V8NameConverter::NameInCode(byte* addr) const {
 const char* V8NameConverter::RootRelativeName(int offset) const {
   if (isolate_ == nullptr) return nullptr;
 
-  const int kRootsStart = 0;
-  const int kRootsEnd = Heap::roots_to_external_reference_table_offset();
-  const int kExtRefsStart = kRootsEnd;
-  const int kExtRefsEnd = Heap::roots_to_builtins_offset();
-  const int kBuiltinsStart = kExtRefsEnd;
-  const int kBuiltinsEnd =
-      kBuiltinsStart + Builtins::builtin_count * kPointerSize;
+  const int kRootsStart = IsolateData::kRootsTableOffset;
+  const int kRootsEnd = IsolateData::kRootsTableEndOffset;
+  const int kExtRefsStart = IsolateData::kExternalReferenceTableOffset;
+  const int kExtRefsEnd = IsolateData::kExternalReferenceTableEndOffset;
+  const int kBuiltinsStart = IsolateData::kBuiltinsTableOffset;
+  const int kBuiltinsEnd = IsolateData::kBuiltinsTableEndOffset;
 
   if (kRootsStart <= offset && offset < kRootsEnd) {
     uint32_t offset_in_roots_table = offset - kRootsStart;
@@ -135,7 +135,7 @@ const char* V8NameConverter::RootRelativeName(int offset) const {
 
     HeapStringAllocator allocator;
     StringStream accumulator(&allocator);
-    isolate_->heap()->root(root_index)->ShortPrint(&accumulator);
+    isolate_->root(root_index)->ShortPrint(&accumulator);
     std::unique_ptr<char[]> obj_name = accumulator.ToCString();
 
     SNPrintF(v8_buffer_, "root (%s)", obj_name.get());
@@ -150,12 +150,12 @@ const char* V8NameConverter::RootRelativeName(int offset) const {
     }
 
     // Likewise if the external reference table is uninitialized.
-    if (!isolate_->heap()->external_reference_table()->is_initialized()) {
+    if (!isolate_->external_reference_table()->is_initialized()) {
       return nullptr;
     }
 
     SNPrintF(v8_buffer_, "external reference (%s)",
-             isolate_->heap()->external_reference_table()->NameFromOffset(
+             isolate_->external_reference_table()->NameFromOffset(
                  offset_in_extref_table));
     return v8_buffer_.start();
 
@@ -252,7 +252,8 @@ static void PrintRelocInfo(StringBuilder* out, Isolate* isolate,
     } else {
       out->AddFormatted(" %s", Code::Kind2String(kind));
     }
-  } else if (RelocInfo::IsWasmStubCall(rmode)) {
+  } else if (RelocInfo::IsWasmStubCall(rmode) && !isolate) {
+    // Host is isolate-independent, try wasm native module instead.
     wasm::WasmCode* code = host.as_wasm_code()->native_module()->Lookup(
         relocinfo->wasm_stub_call_address());
     out->AddFormatted("    ;; wasm stub: %s", code->GetRuntimeStubName());

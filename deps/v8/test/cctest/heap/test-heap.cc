@@ -1692,7 +1692,7 @@ TEST(TestAlignedAllocation) {
     // aligned address.
     start = AlignNewSpace(kDoubleAligned, 0);
     obj = NewSpaceAllocateAligned(kPointerSize, kDoubleAligned);
-    CHECK(IsAddressAligned(obj->address(), kDoubleAlignment));
+    CHECK(IsAligned(obj->address(), kDoubleAlignment));
     // There is no filler.
     CHECK_EQ(kPointerSize, *top_addr - start);
 
@@ -1700,7 +1700,7 @@ TEST(TestAlignedAllocation) {
     // unaligned address.
     start = AlignNewSpace(kDoubleAligned, kPointerSize);
     obj = NewSpaceAllocateAligned(kPointerSize, kDoubleAligned);
-    CHECK(IsAddressAligned(obj->address(), kDoubleAlignment));
+    CHECK(IsAligned(obj->address(), kDoubleAlignment));
     // There is a filler object before the object.
     filler = HeapObject::FromAddress(start);
     CHECK(obj != filler && filler->IsFiller() &&
@@ -1710,11 +1710,11 @@ TEST(TestAlignedAllocation) {
     // Similarly for kDoubleUnaligned.
     start = AlignNewSpace(kDoubleUnaligned, 0);
     obj = NewSpaceAllocateAligned(kPointerSize, kDoubleUnaligned);
-    CHECK(IsAddressAligned(obj->address(), kDoubleAlignment, kPointerSize));
+    CHECK(IsAligned(obj->address() + kPointerSize, kDoubleAlignment));
     CHECK_EQ(kPointerSize, *top_addr - start);
     start = AlignNewSpace(kDoubleUnaligned, kPointerSize);
     obj = NewSpaceAllocateAligned(kPointerSize, kDoubleUnaligned);
-    CHECK(IsAddressAligned(obj->address(), kDoubleAlignment, kPointerSize));
+    CHECK(IsAligned(obj->address() + kPointerSize, kDoubleAlignment));
     // There is a filler object before the object.
     filler = HeapObject::FromAddress(start);
     CHECK(obj != filler && filler->IsFiller() &&
@@ -1774,11 +1774,11 @@ TEST(TestAlignedOverAllocation) {
     start = AlignOldSpace(kDoubleAligned, 0);
     obj = OldSpaceAllocateAligned(kPointerSize, kDoubleAligned);
     // The object is aligned.
-    CHECK(IsAddressAligned(obj->address(), kDoubleAlignment));
+    CHECK(IsAligned(obj->address(), kDoubleAlignment));
     // Try the opposite alignment case.
     start = AlignOldSpace(kDoubleAligned, kPointerSize);
     obj = OldSpaceAllocateAligned(kPointerSize, kDoubleAligned);
-    CHECK(IsAddressAligned(obj->address(), kDoubleAlignment));
+    CHECK(IsAligned(obj->address(), kDoubleAlignment));
     filler = HeapObject::FromAddress(start);
     CHECK(obj != filler);
     CHECK(filler->IsFiller());
@@ -1790,11 +1790,11 @@ TEST(TestAlignedOverAllocation) {
     start = AlignOldSpace(kDoubleUnaligned, 0);
     obj = OldSpaceAllocateAligned(kPointerSize, kDoubleUnaligned);
     // The object is aligned.
-    CHECK(IsAddressAligned(obj->address(), kDoubleAlignment, kPointerSize));
+    CHECK(IsAligned(obj->address() + kPointerSize, kDoubleAlignment));
     // Try the opposite alignment case.
     start = AlignOldSpace(kDoubleUnaligned, kPointerSize);
     obj = OldSpaceAllocateAligned(kPointerSize, kDoubleUnaligned);
-    CHECK(IsAddressAligned(obj->address(), kDoubleAlignment, kPointerSize));
+    CHECK(IsAligned(obj->address() + kPointerSize, kDoubleAlignment));
     filler = HeapObject::FromAddress(start);
     CHECK(obj != filler && filler->IsFiller() &&
           filler->Size() == kPointerSize);
@@ -4764,16 +4764,6 @@ TEST(MapRetaining) {
   CheckMapRetainingFor(7);
 }
 
-TEST(WritableVsImmortalRoots) {
-  for (RootIndex root_index = RootIndex::kFirstRoot;
-       root_index <= RootIndex::kLastRoot; ++root_index) {
-    bool writable = Heap::RootCanBeWrittenAfterInitialization(root_index);
-    bool immortal = Heap::RootIsImmortalImmovable(root_index);
-    // A root value can be writable, immortal, or neither, but not both.
-    CHECK(!immortal || !writable);
-  }
-}
-
 TEST(PreprocessStackTrace) {
   // Do not automatically trigger early GC.
   FLAG_gc_interval = -1;
@@ -6138,7 +6128,7 @@ size_t MemoryAllocatorSizeFromHeapCapacity(size_t capacity) {
   double factor = Page::kPageSize * 1.0 / Page::kAllocatableMemory;
   // Some tables (e.g. deoptimization table) are allocated directly with the
   // memory allocator. Allow some slack to account for them.
-  size_t slack = 1 * MB;
+  size_t slack = 5 * MB;
   return static_cast<size_t>(capacity * factor) + slack;
 }
 

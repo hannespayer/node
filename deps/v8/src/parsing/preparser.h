@@ -56,6 +56,7 @@ class PreParserIdentifier {
   }
   bool IsNull() const { return type_ == kNullIdentifier; }
   bool IsEval() const { return type_ == kEvalIdentifier; }
+  bool IsAsync() const { return type_ == kAsyncIdentifier; }
   bool IsArguments() const { return type_ == kArgumentsIdentifier; }
   bool IsEvalOrArguments() const { return IsEval() || IsArguments(); }
   bool IsConstructor() const { return type_ == kConstructorIdentifier; }
@@ -77,7 +78,6 @@ class PreParserIdentifier {
   };
 
   explicit PreParserIdentifier(Type type) : string_(nullptr), type_(type) {}
-  // Only non-nullptr when PreParser.track_unresolved_variables_ is true.
   const AstRawString* string_;
 
   Type type_;
@@ -431,7 +431,6 @@ class PreParserExpressionList {
   PreParserExpressionList* operator->() { return this; }
   void Add(const PreParserExpression& expression, Zone* zone) {
     if (expression.variables_ != nullptr) {
-      DCHECK(FLAG_lazy_inner_functions);
       DCHECK_NOT_NULL(zone);
       if (variables_ == nullptr) {
         variables_ = new (zone) VariableZoneThreadedListType();
@@ -570,7 +569,6 @@ class PreParserFactory {
     // normalized to string literals during object literal parsing.
     PreParserExpression expression = PreParserExpression::Default();
     if (identifier.string_ != nullptr) {
-      DCHECK(FLAG_lazy_inner_functions);
       VariableProxy* variable = ast_node_factory_.NewVariableProxy(
           identifier.string_, NORMAL_VARIABLE);
       expression.AddVariable(variable, zone_);
@@ -837,31 +835,15 @@ class PreParserFactory {
   }
 
  private:
-  // For creating VariableProxy objects (if
-  // PreParser::track_unresolved_variables_ is used).
+  // For creating VariableProxy objects to track unresolved variables.
   AstNodeFactory ast_node_factory_;
   Zone* zone_;
 };
 
 
 struct PreParserFormalParameters : FormalParametersBase {
-  struct Parameter : public ZoneObject {
-    using VariableZoneThreadedListType =
-        ZoneThreadedList<VariableProxy, VariableProxy::PreParserNext>;
-
-    Parameter(VariableZoneThreadedListType* variables, bool is_rest)
-        : variables_(variables), is_rest(is_rest) {}
-    Parameter** next() { return &next_parameter; }
-    Parameter* const* next() const { return &next_parameter; }
-
-    VariableZoneThreadedListType* variables_;
-    Parameter* next_parameter = nullptr;
-    bool is_rest : 1;
-  };
   explicit PreParserFormalParameters(DeclarationScope* scope)
       : FormalParametersBase(scope) {}
-
-  base::ThreadedList<Parameter> params;
 };
 
 
@@ -995,7 +977,6 @@ class PreParser : public ParserBase<PreParser> {
                               runtime_call_stats, logger, script_id,
                               parsing_module, parsing_on_main_thread),
         use_counts_(nullptr),
-        track_unresolved_variables_(false),
         preparsed_scope_data_builder_(nullptr) {}
 
   static bool IsPreParser() { return true; }
@@ -1019,14 +1000,9 @@ class PreParser : public ParserBase<PreParser> {
   PreParseResult PreParseFunction(
       const AstRawString* function_name, FunctionKind kind,
       FunctionLiteral::FunctionType function_type,
-      DeclarationScope* function_scope, bool track_unresolved_variables,
-      bool may_abort, int* use_counts,
+      DeclarationScope* function_scope, bool may_abort, int* use_counts,
       ProducedPreParsedScopeData** produced_preparser_scope_data,
       int script_id);
-
-  V8_INLINE static bool ShouldTrackUnresolvedVariables(bool is_inner_function) {
-    return FLAG_preparser_scope_analysis || is_inner_function;
-  }
 
   PreParsedScopeDataBuilder* preparsed_scope_data_builder() const {
     return preparsed_scope_data_builder_;
@@ -1062,8 +1038,7 @@ class PreParser : public ParserBase<PreParser> {
       FunctionLiteral::FunctionType function_type,
       DeclarationScope* function_scope, int* num_parameters,
       ProducedPreParsedScopeData** produced_preparsed_scope_data,
-      bool is_inner_function, bool may_abort,
-      FunctionLiteral::EagerCompileHint* hint, bool* ok) {
+      bool may_abort, FunctionLiteral::EagerCompileHint* hint, bool* ok) {
     UNREACHABLE();
   }
 
@@ -1150,18 +1125,15 @@ class PreParser : public ParserBase<PreParser> {
   }
 
   V8_INLINE void RewriteCatchPattern(CatchInfo* catch_info, bool* ok) {
-    if (track_unresolved_variables_) {
-      const AstRawString* catch_name = catch_info->name.string_;
-      if (catch_name == nullptr) {
-        catch_name = ast_value_factory()->dot_catch_string();
-      }
-      catch_info->scope->DeclareCatchVariableName(catch_name);
+    const AstRawString* catch_name = catch_info->name.string_;
+    if (catch_name == nullptr) {
+      catch_name = ast_value_factory()->dot_catch_string();
+    }
+    catch_info->scope->DeclareCatchVariableName(catch_name);
 
-      if (catch_info->pattern.variables_ != nullptr) {
-        for (auto variable : *catch_info->pattern.variables_) {
-          scope()->DeclareVariableName(variable->raw_name(),
-                                       VariableMode::kLet);
-        }
+    if (catch_info->pattern.variables_ != nullptr) {
+      for (auto variable : *catch_info->pattern.variables_) {
+        scope()->DeclareVariableName(variable->raw_name(), VariableMode::kLet);
       }
     }
   }
@@ -1174,6 +1146,10 @@ class PreParser : public ParserBase<PreParser> {
     return PreParserStatement::Default();
   }
 
+  V8_INLINE void GetUnexpectedTokenMessage(Token::Value token,
+                                           MessageTemplate* message,
+                                           Scanner::Location* location,
+                                           const char** arg) {}
   V8_INLINE void ParseAndRewriteGeneratorFunctionBody(
       int pos, FunctionKind kind, PreParserStatementList body, bool* ok) {
     ParseStatementList(body, Token::RBRACE, ok);
@@ -1186,8 +1162,7 @@ class PreParser : public ParserBase<PreParser> {
       const AstRawString* function_name,
       FunctionLiteral::FunctionType function_type,
       DeclarationScope* function_scope) {
-    if (track_unresolved_variables_ &&
-        function_type == FunctionLiteral::kNamedExpression &&
+    if (function_type == FunctionLiteral::kNamedExpression &&
         function_scope->LookupLocal(function_name) == nullptr) {
       DCHECK_EQ(function_scope, scope());
       function_scope->DeclareFunctionVar(function_name);
@@ -1225,7 +1200,6 @@ class PreParser : public ParserBase<PreParser> {
                   ZonePtrList<const AstRawString>* names, bool* ok) {
     DCHECK_NULL(names);
     if (variable_name.string_ != nullptr) {
-      DCHECK(track_unresolved_variables_);
       scope()->DeclareVariableName(variable_name.string_, mode);
       if (is_sloppy_block_function) {
         GetDeclarationScope()->DeclareSloppyBlockFunction(variable_name.string_,
@@ -1242,7 +1216,6 @@ class PreParser : public ParserBase<PreParser> {
     // Preparser shouldn't be used in contexts where we need to track the names.
     DCHECK_NULL(names);
     if (variable_name.string_ != nullptr) {
-      DCHECK(track_unresolved_variables_);
       scope()->DeclareVariableName(variable_name.string_, VariableMode::kLet);
     }
     return PreParserStatement::Default();
@@ -1251,7 +1224,6 @@ class PreParser : public ParserBase<PreParser> {
                                       ClassInfo* class_info,
                                       int class_token_pos, bool* ok) {
     if (name.string_ != nullptr) {
-      DCHECK(track_unresolved_variables_);
       scope()->DeclareVariableName(name.string_, VariableMode::kConst);
     }
   }
@@ -1271,7 +1243,6 @@ class PreParser : public ParserBase<PreParser> {
 
     if (kind == ClassLiteralProperty::PRIVATE_FIELD &&
         property_name.string_ != nullptr) {
-      DCHECK(track_unresolved_variables_);
       scope()->DeclareVariableName(property_name.string_, VariableMode::kConst);
     }
   }
@@ -1317,6 +1288,10 @@ class PreParser : public ParserBase<PreParser> {
   // Helper functions for recursive descent.
   V8_INLINE bool IsEval(const PreParserIdentifier& identifier) const {
     return identifier.IsEval();
+  }
+
+  V8_INLINE bool IsAsync(const PreParserIdentifier& identifier) const {
+    return identifier.IsAsync();
   }
 
   V8_INLINE bool IsArguments(const PreParserIdentifier& identifier) const {
@@ -1407,16 +1382,22 @@ class PreParser : public ParserBase<PreParser> {
   V8_INLINE static void CheckAssigningFunctionLiteralToProperty(
       const PreParserExpression& left, const PreParserExpression& right) {}
 
-  V8_INLINE void MarkExpressionAsAssigned(
-      const PreParserExpression& expression) {
+  V8_INLINE void MarkPatternAsAssigned(const PreParserExpression& expression) {
     // TODO(marja): To be able to produce the same errors, the preparser needs
     // to start tracking which expressions are variables and which are assigned.
     if (expression.variables_ != nullptr) {
-      DCHECK(FLAG_lazy_inner_functions);
-      DCHECK(track_unresolved_variables_);
       for (auto variable : *expression.variables_) {
         variable->set_is_assigned();
       }
+    }
+  }
+
+  V8_INLINE void MarkExpressionAsAssigned(
+      const PreParserExpression& expression) {
+    if (IsIdentifier(expression)) {
+      DCHECK_NOT_NULL(expression.variables_);
+      DCHECK_EQ(1, expression.variables_->LengthForTest());
+      expression.variables_->first()->set_is_assigned();
     }
   }
 
@@ -1452,7 +1433,7 @@ class PreParser : public ParserBase<PreParser> {
   V8_INLINE PreParserStatement InitializeForEachStatement(
       PreParserStatement stmt, const PreParserExpression& each,
       const PreParserExpression& subject, PreParserStatement body) {
-    MarkExpressionAsAssigned(each);
+    MarkPatternAsAssigned(each);
     return stmt;
   }
 
@@ -1461,7 +1442,7 @@ class PreParser : public ParserBase<PreParser> {
       const PreParserExpression& iterable, PreParserStatement body,
       bool finalize, IteratorType type,
       int next_result_pos = kNoSourcePosition) {
-    MarkExpressionAsAssigned(each);
+    MarkPatternAsAssigned(each);
     return stmt;
   }
 
@@ -1472,31 +1453,27 @@ class PreParser : public ParserBase<PreParser> {
   V8_INLINE void DesugarBindingInForEachStatement(
       ForInfo* for_info, PreParserStatement* body_block,
       PreParserExpression* each_variable, bool* ok) {
-    if (track_unresolved_variables_) {
-      DCHECK_EQ(1, for_info->parsing_result.declarations.size());
-      bool is_for_var_of =
-          for_info->mode == ForEachStatement::ITERATE &&
-          for_info->parsing_result.descriptor.mode == VariableMode::kVar;
-      bool collect_names =
-          IsLexicalVariableMode(for_info->parsing_result.descriptor.mode) ||
-          is_for_var_of;
+    DCHECK_EQ(1, for_info->parsing_result.declarations.size());
+    bool is_for_var_of =
+        for_info->mode == ForEachStatement::ITERATE &&
+        for_info->parsing_result.descriptor.mode == VariableMode::kVar;
+    bool collect_names =
+        IsLexicalVariableMode(for_info->parsing_result.descriptor.mode) ||
+        is_for_var_of;
 
-      DeclareAndInitializeVariables(
-          PreParserStatement::Default(), &for_info->parsing_result.descriptor,
-          &for_info->parsing_result.declarations[0],
-          collect_names ? &for_info->bound_names : nullptr, ok);
-    }
+    DeclareAndInitializeVariables(
+        PreParserStatement::Default(), &for_info->parsing_result.descriptor,
+        &for_info->parsing_result.declarations[0],
+        collect_names ? &for_info->bound_names : nullptr, ok);
   }
 
   V8_INLINE PreParserStatement CreateForEachStatementTDZ(
       PreParserStatement init_block, const ForInfo& for_info, bool* ok) {
-    if (track_unresolved_variables_) {
-      if (IsLexicalVariableMode(for_info.parsing_result.descriptor.mode)) {
-        for (auto name : for_info.bound_names) {
-          scope()->DeclareVariableName(name, VariableMode::kLet);
-        }
-        return PreParserStatement::Default();
+    if (IsLexicalVariableMode(for_info.parsing_result.descriptor.mode)) {
+      for (auto name : for_info.bound_names) {
+        scope()->DeclareVariableName(name, VariableMode::kLet);
       }
+      return PreParserStatement::Default();
     }
     return init_block;
   }
@@ -1507,11 +1484,9 @@ class PreParser : public ParserBase<PreParser> {
       PreParserStatement body, Scope* inner_scope, const ForInfo& for_info,
       bool* ok) {
     // See Parser::DesugarLexicalBindingsInForStatement.
-    if (track_unresolved_variables_) {
-      for (auto name : for_info.bound_names) {
-        inner_scope->DeclareVariableName(
-            name, for_info.parsing_result.descriptor.mode);
-      }
+    for (auto name : for_info.bound_names) {
+      inner_scope->DeclareVariableName(name,
+                                       for_info.parsing_result.descriptor.mode);
     }
     return loop;
   }
@@ -1531,27 +1506,24 @@ class PreParser : public ParserBase<PreParser> {
   V8_INLINE void InsertShadowingVarBindingInitializers(
       PreParserStatement block) {}
 
-  V8_INLINE PreParserExpression
-  NewThrowReferenceError(MessageTemplate::Template message, int pos) {
+  V8_INLINE PreParserExpression NewThrowReferenceError(MessageTemplate message,
+                                                       int pos) {
     return PreParserExpression::Default();
   }
 
-  V8_INLINE PreParserExpression
-  NewThrowSyntaxError(MessageTemplate::Template message,
-                      const PreParserIdentifier& arg, int pos) {
+  V8_INLINE PreParserExpression NewThrowSyntaxError(
+      MessageTemplate message, const PreParserIdentifier& arg, int pos) {
     return PreParserExpression::Default();
   }
 
-  V8_INLINE PreParserExpression
-  NewThrowTypeError(MessageTemplate::Template message,
-                    const PreParserIdentifier& arg, int pos) {
+  V8_INLINE PreParserExpression NewThrowTypeError(
+      MessageTemplate message, const PreParserIdentifier& arg, int pos) {
     return PreParserExpression::Default();
   }
 
   // Reporting errors.
   void ReportMessageAt(Scanner::Location source_location,
-                       MessageTemplate::Template message,
-                       const char* arg = nullptr,
+                       MessageTemplate message, const char* arg = nullptr,
                        ParseErrorType error_type = kSyntaxError) {
     pending_error_handler()->ReportMessageAt(source_location.beg_pos,
                                              source_location.end_pos, message,
@@ -1559,11 +1531,11 @@ class PreParser : public ParserBase<PreParser> {
   }
 
   V8_INLINE void ReportUnidentifiableError() {
-    pending_error_handler()->SetUnidentifiableError();
+    pending_error_handler()->set_unidentifiable_error();
   }
 
   V8_INLINE void ReportMessageAt(Scanner::Location source_location,
-                                 MessageTemplate::Template message,
+                                 MessageTemplate message,
                                  const PreParserIdentifier& arg,
                                  ParseErrorType error_type = kSyntaxError) {
     UNREACHABLE();
@@ -1611,38 +1583,32 @@ class PreParser : public ParserBase<PreParser> {
   }
 
   V8_INLINE PreParserExpression ThisExpression(int pos = kNoSourcePosition) {
-    if (track_unresolved_variables_) {
-      scope()->NewUnresolved(factory()->ast_node_factory(),
-                             ast_value_factory()->this_string(), pos,
-                             THIS_VARIABLE);
-    }
+    scope()->NewUnresolved(factory()->ast_node_factory(),
+                           ast_value_factory()->this_string(), pos,
+                           THIS_VARIABLE);
     return PreParserExpression::This();
   }
 
   V8_INLINE PreParserExpression NewSuperPropertyReference(int pos) {
-    if (track_unresolved_variables_) {
-      scope()->NewUnresolved(factory()->ast_node_factory(),
-                             ast_value_factory()->this_function_string(), pos,
-                             NORMAL_VARIABLE);
-      scope()->NewUnresolved(factory()->ast_node_factory(),
-                             ast_value_factory()->this_string(), pos,
-                             THIS_VARIABLE);
-    }
+    scope()->NewUnresolved(factory()->ast_node_factory(),
+                           ast_value_factory()->this_function_string(), pos,
+                           NORMAL_VARIABLE);
+    scope()->NewUnresolved(factory()->ast_node_factory(),
+                           ast_value_factory()->this_string(), pos,
+                           THIS_VARIABLE);
     return PreParserExpression::Default();
   }
 
   V8_INLINE PreParserExpression NewSuperCallReference(int pos) {
-    if (track_unresolved_variables_) {
-      scope()->NewUnresolved(factory()->ast_node_factory(),
-                             ast_value_factory()->this_function_string(), pos,
-                             NORMAL_VARIABLE);
-      scope()->NewUnresolved(factory()->ast_node_factory(),
-                             ast_value_factory()->new_target_string(), pos,
-                             NORMAL_VARIABLE);
-      scope()->NewUnresolved(factory()->ast_node_factory(),
-                             ast_value_factory()->this_string(), pos,
-                             THIS_VARIABLE);
-    }
+    scope()->NewUnresolved(factory()->ast_node_factory(),
+                           ast_value_factory()->this_function_string(), pos,
+                           NORMAL_VARIABLE);
+    scope()->NewUnresolved(factory()->ast_node_factory(),
+                           ast_value_factory()->new_target_string(), pos,
+                           NORMAL_VARIABLE);
+    scope()->NewUnresolved(factory()->ast_node_factory(),
+                           ast_value_factory()->this_string(), pos,
+                           THIS_VARIABLE);
     return PreParserExpression::SuperCallReference();
   }
 
@@ -1656,19 +1622,16 @@ class PreParser : public ParserBase<PreParser> {
 
   V8_INLINE PreParserExpression ExpressionFromLiteral(Token::Value token,
                                                       int pos) {
-    return PreParserExpression::Default();
-  }
-
-  PreParserExpression ExpressionFromIdentifier(
-      const PreParserIdentifier& name, int start_position,
-      InferName infer = InferName::kYes);
-
-  V8_INLINE PreParserExpression ExpressionFromString(int pos) {
+    if (token != Token::STRING) return PreParserExpression::Default();
     if (scanner()->IsUseStrict()) {
       return PreParserExpression::UseStrictStringLiteral();
     }
     return PreParserExpression::StringLiteral();
   }
+
+  PreParserExpression ExpressionFromIdentifier(
+      const PreParserIdentifier& name, int start_position,
+      InferName infer = InferName::kYes);
 
   V8_INLINE PreParserExpressionList NewExpressionList(int size) const {
     return PreParserExpressionList();
@@ -1697,76 +1660,53 @@ class PreParser : public ParserBase<PreParser> {
     return PreParserStatement::Jump();
   }
 
-  V8_INLINE void AddParameterInitializationBlock(
-      const PreParserFormalParameters& parameters, PreParserStatementList body,
-      bool is_async, bool* ok) {
-    if (!parameters.is_simple) {
-      BuildParameterInitializationBlock(parameters, ok);
-    }
-  }
-
   V8_INLINE void AddFormalParameter(PreParserFormalParameters* parameters,
-                                    const PreParserExpression& pattern,
+                                    PreParserExpression& pattern,
                                     const PreParserExpression& initializer,
                                     int initializer_end_position,
                                     bool is_rest) {
-    if (track_unresolved_variables_) {
-      DCHECK(FLAG_lazy_inner_functions);
-      parameters->params.Add(new (zone()) PreParserFormalParameters::Parameter(
-          pattern.variables_, is_rest));
+    DeclarationScope* scope = parameters->scope;
+    if (pattern.variables_ == nullptr) {
+      scope->DeclareParameterName(ast_value_factory()->empty_string(), is_rest,
+                                  ast_value_factory(), false, true);
+    } else {
+      // We declare the parameter name for all names, but only create a
+      // parameter entry for the first one.
+      auto it = pattern.variables_->begin();
+      if (scope->LookupLocal(it->raw_name()) != nullptr) {
+        classifier()->RecordDuplicateFormalParameterError(
+            Scanner::Location::invalid());
+      }
+      scope->DeclareParameterName(it->raw_name(), is_rest, ast_value_factory(),
+                                  true, true);
+      for (++it; it != pattern.variables_->end(); ++it) {
+        if (scope->LookupLocal(it->raw_name()) != nullptr) {
+          classifier()->RecordDuplicateFormalParameterError(
+              Scanner::Location::invalid());
+        }
+        scope->DeclareParameterName(it->raw_name(), is_rest,
+                                    ast_value_factory(), true, false);
+      }
     }
     parameters->UpdateArityAndFunctionLength(!initializer.IsNull(), is_rest);
   }
 
   V8_INLINE void DeclareFormalParameters(
-      DeclarationScope* scope,
-      const base::ThreadedList<PreParserFormalParameters::Parameter>&
-          parameters,
-      bool is_simple) {
-    if (!is_simple) scope->SetHasNonSimpleParameters();
-    if (track_unresolved_variables_) {
-      DCHECK(FLAG_lazy_inner_functions);
-      for (auto parameter : parameters) {
-        DCHECK_IMPLIES(is_simple, parameter->variables_ != nullptr);
-        DCHECK_IMPLIES(is_simple, parameter->variables_->LengthForTest() == 1);
-        // Make sure each parameter is added only once even if it's a
-        // destructuring parameter which contains multiple names.
-        bool add_parameter = true;
-        if (parameter->variables_ != nullptr) {
-          for (auto variable : (*parameter->variables_)) {
-            // We declare the parameter name for all names, but only create a
-            // parameter entry for the first one.
-            scope->DeclareParameterName(variable->raw_name(),
-                                        parameter->is_rest, ast_value_factory(),
-                                        true, add_parameter);
-            add_parameter = false;
-          }
-        }
-        if (add_parameter) {
-          // No names were declared; declare a dummy one here to up the
-          // parameter count.
-          DCHECK(!is_simple);
-          scope->DeclareParameterName(ast_value_factory()->empty_string(),
-                                      parameter->is_rest, ast_value_factory(),
-                                      false, add_parameter);
-        }
-      }
-    }
+      const PreParserFormalParameters* parameters) {
+    if (!parameters->is_simple) parameters->scope->SetHasNonSimpleParameters();
   }
 
   V8_INLINE void DeclareArrowFunctionFormalParameters(
       PreParserFormalParameters* parameters, const PreParserExpression& params,
-      const Scanner::Location& params_loc, Scanner::Location* duplicate_loc,
-      bool* ok) {
-    // TODO(wingo): Detect duplicated identifiers in paramlists.  Detect
-    // parameter lists that are too long.
-    if (track_unresolved_variables_) {
-      DCHECK(FLAG_lazy_inner_functions);
-      if (params.variables_ != nullptr) {
-        for (auto variable : *params.variables_) {
-          parameters->scope->DeclareVariableName(variable->raw_name(),
-                                                 VariableMode::kVar);
+      const Scanner::Location& params_loc, bool* ok) {
+    if (params.variables_ != nullptr) {
+      Scope* scope = parameters->scope;
+      for (auto variable : *params.variables_) {
+        if (scope->LookupLocal(variable->raw_name())) {
+          classifier()->RecordDuplicateFormalParameterError(
+              Scanner::Location::invalid());
         }
+        scope->DeclareVariableName(variable->raw_name(), VariableMode::kVar);
       }
     }
   }
@@ -1805,7 +1745,6 @@ class PreParser : public ParserBase<PreParser> {
   // Preparser's private field members.
 
   int* use_counts_;
-  bool track_unresolved_variables_;
   PreParserLogger log_;
 
   PreParsedScopeDataBuilder* preparsed_scope_data_builder_;

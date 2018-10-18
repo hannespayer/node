@@ -30,7 +30,9 @@ namespace torque {
   V(ElementAccessExpression)             \
   V(AssignmentExpression)                \
   V(IncrementDecrementExpression)        \
-  V(AssumeTypeImpossibleExpression)
+  V(AssumeTypeImpossibleExpression)      \
+  V(StatementExpression)                 \
+  V(TryLabelExpression)
 
 #define AST_TYPE_EXPRESSION_NODE_KIND_LIST(V) \
   V(BasicTypeExpression)                      \
@@ -51,8 +53,7 @@ namespace torque {
   V(AssertStatement)                    \
   V(TailCallStatement)                  \
   V(VarDeclarationStatement)            \
-  V(GotoStatement)                      \
-  V(TryLabelStatement)
+  V(GotoStatement)
 
 #define AST_DECLARATION_NODE_KIND_LIST(V) \
   V(TypeDeclaration)                      \
@@ -354,10 +355,19 @@ struct AssumeTypeImpossibleExpression : Expression {
 struct ParameterList {
   std::vector<std::string> names;
   std::vector<TypeExpression*> types;
+  size_t implicit_count;
   bool has_varargs;
   std::string arguments_variable;
 
-  static ParameterList Empty() { return ParameterList{{}, {}, false, ""}; }
+  static ParameterList Empty() { return ParameterList{{}, {}, 0, false, ""}; }
+  std::vector<TypeExpression*> GetImplicitTypes() {
+    return std::vector<TypeExpression*>(types.begin(),
+                                        types.begin() + implicit_count);
+  }
+  std::vector<TypeExpression*> GetExplicitTypes() {
+    return std::vector<TypeExpression*>(types.begin() + implicit_count,
+                                        types.end());
+  }
 };
 
 struct BasicTypeExpression : TypeExpression {
@@ -500,7 +510,7 @@ struct ForLoopStatement : Statement {
   DEFINE_AST_NODE_LEAF_BOILERPLATE(ForLoopStatement)
   ForLoopStatement(SourcePosition pos, base::Optional<Statement*> declaration,
                    base::Optional<Expression*> test,
-                   base::Optional<Expression*> action, Statement* body)
+                   base::Optional<Statement*> action, Statement* body)
       : Statement(kKind, pos),
         var_declaration(),
         test(std::move(test)),
@@ -511,7 +521,7 @@ struct ForLoopStatement : Statement {
   }
   base::Optional<VarDeclarationStatement*> var_declaration;
   base::Optional<Expression*> test;
-  base::Optional<Expression*> action;
+  base::Optional<Statement*> action;
   Statement* body;
 };
 
@@ -553,15 +563,22 @@ struct LabelBlock : AstNode {
   Statement* body;
 };
 
-struct TryLabelStatement : Statement {
-  DEFINE_AST_NODE_LEAF_BOILERPLATE(TryLabelStatement)
-  TryLabelStatement(SourcePosition pos, Statement* try_block,
-                    std::vector<LabelBlock*> label_blocks)
-      : Statement(kKind, pos),
-        try_block(try_block),
-        label_blocks(std::move(label_blocks)) {}
-  Statement* try_block;
-  std::vector<LabelBlock*> label_blocks;
+struct StatementExpression : Expression {
+  DEFINE_AST_NODE_LEAF_BOILERPLATE(StatementExpression)
+  StatementExpression(SourcePosition pos, Statement* statement)
+      : Expression(kKind, pos), statement(statement) {}
+  Statement* statement;
+};
+
+struct TryLabelExpression : Expression {
+  DEFINE_AST_NODE_LEAF_BOILERPLATE(TryLabelExpression)
+  TryLabelExpression(SourcePosition pos, Expression* try_expression,
+                     LabelBlock* label_block)
+      : Expression(kKind, pos),
+        try_expression(try_expression),
+        label_block(label_block) {}
+  Expression* try_expression;
+  LabelBlock* label_block;
 };
 
 struct BlockStatement : Statement {
@@ -797,6 +814,13 @@ bool AstNodeClassCheck::IsInstanceOf(AstNode* node) {
 }
 
 #undef ENUM_ITEM
+
+inline bool IsDeferred(Statement* stmt) {
+  if (auto* block = BlockStatement::DynamicCast(stmt)) {
+    return block->deferred;
+  }
+  return false;
+}
 
 }  // namespace torque
 }  // namespace internal

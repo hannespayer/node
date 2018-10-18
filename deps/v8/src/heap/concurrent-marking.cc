@@ -34,7 +34,10 @@ class ConcurrentMarkingState final
       : live_bytes_(live_bytes) {}
 
   Bitmap* bitmap(const MemoryChunk* chunk) {
-    return Bitmap::FromAddress(chunk->address() + MemoryChunk::kHeaderSize);
+    DCHECK_EQ(reinterpret_cast<intptr_t>(&chunk->marking_bitmap_) -
+                  reinterpret_cast<intptr_t>(chunk),
+              MemoryChunk::kMarkBitmapOffset);
+    return chunk->marking_bitmap_;
   }
 
   void IncrementLiveBytes(MemoryChunk* chunk, intptr_t by) {
@@ -188,6 +191,29 @@ class ConcurrentMarkingVisitor final
     return VisitJSObjectSubclass(map, object);
   }
 
+  int VisitJSWeakCell(Map* map, JSWeakCell* weak_cell) {
+    int size = VisitJSObjectSubclass(map, weak_cell);
+    if (size == 0) {
+      return 0;
+    }
+
+    if (weak_cell->target()->IsHeapObject()) {
+      HeapObject* target = HeapObject::cast(weak_cell->target());
+      if (marking_state_.IsBlackOrGrey(target)) {
+        // Record the slot inside the JSWeakCell, since the
+        // VisitJSObjectSubclass above didn't visit it.
+        Object** slot =
+            HeapObject::RawField(weak_cell, JSWeakCell::kTargetOffset);
+        MarkCompactCollector::RecordSlot(weak_cell, slot, target);
+      } else {
+        // JSWeakCell points to a potentially dead object. We have to process
+        // them when we know the liveness of the whole transitive closure.
+        weak_objects_->js_weak_cells.Push(task_id_, weak_cell);
+      }
+    }
+    return size;
+  }
+
   // Some JS objects can carry back links to embedders that contain information
   // relevant to the garbage collectors.
 
@@ -213,26 +239,17 @@ class ConcurrentMarkingVisitor final
 
   int VisitConsString(Map* map, ConsString* object) {
     int size = ConsString::BodyDescriptor::SizeOf(map, object);
-    const SlotSnapshot& snapshot = MakeSlotSnapshot(map, object, size);
-    if (!ShouldVisit(object)) return 0;
-    VisitPointersInSnapshot(object, snapshot);
-    return size;
+    return VisitWithSnapshot(map, object, size, size);
   }
 
   int VisitSlicedString(Map* map, SlicedString* object) {
     int size = SlicedString::BodyDescriptor::SizeOf(map, object);
-    const SlotSnapshot& snapshot = MakeSlotSnapshot(map, object, size);
-    if (!ShouldVisit(object)) return 0;
-    VisitPointersInSnapshot(object, snapshot);
-    return size;
+    return VisitWithSnapshot(map, object, size, size);
   }
 
   int VisitThinString(Map* map, ThinString* object) {
     int size = ThinString::BodyDescriptor::SizeOf(map, object);
-    const SlotSnapshot& snapshot = MakeSlotSnapshot(map, object, size);
-    if (!ShouldVisit(object)) return 0;
-    VisitPointersInSnapshot(object, snapshot);
-    return size;
+    return VisitWithSnapshot(map, object, size, size);
   }
 
   // ===========================================================================
@@ -407,6 +424,11 @@ class ConcurrentMarkingVisitor final
       UNREACHABLE();
     }
 
+    void VisitCustomWeakPointers(HeapObject* host, Object** start,
+                                 Object** end) override {
+      DCHECK(host->IsJSWeakCell());
+    }
+
    private:
     SlotSnapshot* slot_snapshot_;
   };
@@ -417,10 +439,7 @@ class ConcurrentMarkingVisitor final
     int used_size = map->UsedInstanceSize();
     DCHECK_LE(used_size, size);
     DCHECK_GE(used_size, T::kHeaderSize);
-    const SlotSnapshot& snapshot = MakeSlotSnapshot(map, object, used_size);
-    if (!ShouldVisit(object)) return 0;
-    VisitPointersInSnapshot(object, snapshot);
-    return size;
+    return VisitWithSnapshot(map, object, used_size, size);
   }
 
   template <typename T>
@@ -447,6 +466,14 @@ class ConcurrentMarkingVisitor final
     int size = T::SizeFor(Smi::ToInt(length));
     VisitMapPointer(object, object->map_slot());
     T::BodyDescriptor::IterateBody(map, object, size, this);
+    return size;
+  }
+
+  template <typename T>
+  int VisitWithSnapshot(Map* map, T* object, int used_size, int size) {
+    const SlotSnapshot& snapshot = MakeSlotSnapshot(map, object, used_size);
+    if (!ShouldVisit(object)) return 0;
+    VisitPointersInSnapshot(object, snapshot);
     return size;
   }
 
@@ -538,7 +565,7 @@ ConcurrentMarking::ConcurrentMarking(Heap* heap, MarkingWorklist* shared,
       embedder_objects_(embedder_objects) {
 // The runtime flag should be set only if the compile time flag was set.
 #ifndef V8_CONCURRENT_MARKING
-  CHECK(!FLAG_concurrent_marking);
+  CHECK(!FLAG_concurrent_marking && !FLAG_parallel_marking);
 #endif
 }
 
@@ -624,6 +651,7 @@ void ConcurrentMarking::Run(int task_id, TaskState* task_state) {
     weak_objects_->next_ephemerons.FlushToGlobal(task_id);
     weak_objects_->discovered_ephemerons.FlushToGlobal(task_id);
     weak_objects_->weak_references.FlushToGlobal(task_id);
+    weak_objects_->js_weak_cells.FlushToGlobal(task_id);
     base::AsAtomicWord::Relaxed_Store<size_t>(&task_state->marked_bytes, 0);
     total_marked_bytes_ += marked_bytes;
 
@@ -632,7 +660,7 @@ void ConcurrentMarking::Run(int task_id, TaskState* task_state) {
     }
 
     {
-      base::LockGuard<base::Mutex> guard(&pending_lock_);
+      base::MutexGuard guard(&pending_lock_);
       is_pending_[task_id] = false;
       --pending_task_count_;
       pending_condition_.NotifyAll();
@@ -646,9 +674,9 @@ void ConcurrentMarking::Run(int task_id, TaskState* task_state) {
 }
 
 void ConcurrentMarking::ScheduleTasks() {
+  DCHECK(FLAG_parallel_marking || FLAG_concurrent_marking);
   DCHECK(!heap_->IsTearingDown());
-  if (!FLAG_concurrent_marking) return;
-  base::LockGuard<base::Mutex> guard(&pending_lock_);
+  base::MutexGuard guard(&pending_lock_);
   DCHECK_EQ(0, pending_task_count_);
   if (task_count_ == 0) {
     static const int num_cores =
@@ -685,9 +713,10 @@ void ConcurrentMarking::ScheduleTasks() {
 }
 
 void ConcurrentMarking::RescheduleTasksIfNeeded() {
-  if (!FLAG_concurrent_marking || heap_->IsTearingDown()) return;
+  DCHECK(FLAG_parallel_marking || FLAG_concurrent_marking);
+  if (heap_->IsTearingDown()) return;
   {
-    base::LockGuard<base::Mutex> guard(&pending_lock_);
+    base::MutexGuard guard(&pending_lock_);
     if (pending_task_count_ > 0) return;
   }
   if (!shared_->IsGlobalPoolEmpty() ||
@@ -698,8 +727,8 @@ void ConcurrentMarking::RescheduleTasksIfNeeded() {
 }
 
 bool ConcurrentMarking::Stop(StopRequest stop_request) {
-  if (!FLAG_concurrent_marking) return false;
-  base::LockGuard<base::Mutex> guard(&pending_lock_);
+  DCHECK(FLAG_parallel_marking || FLAG_concurrent_marking);
+  base::MutexGuard guard(&pending_lock_);
 
   if (pending_task_count_ == 0) return false;
 
@@ -730,7 +759,7 @@ bool ConcurrentMarking::Stop(StopRequest stop_request) {
 bool ConcurrentMarking::IsStopped() {
   if (!FLAG_concurrent_marking) return true;
 
-  base::LockGuard<base::Mutex> guard(&pending_lock_);
+  base::MutexGuard guard(&pending_lock_);
   return pending_task_count_ == 0;
 }
 
@@ -772,8 +801,9 @@ size_t ConcurrentMarking::TotalMarkedBytes() {
 
 ConcurrentMarking::PauseScope::PauseScope(ConcurrentMarking* concurrent_marking)
     : concurrent_marking_(concurrent_marking),
-      resume_on_exit_(concurrent_marking_->Stop(
-          ConcurrentMarking::StopRequest::PREEMPT_TASKS)) {
+      resume_on_exit_(FLAG_concurrent_marking &&
+                      concurrent_marking_->Stop(
+                          ConcurrentMarking::StopRequest::PREEMPT_TASKS)) {
   DCHECK_IMPLIES(resume_on_exit_, FLAG_concurrent_marking);
 }
 

@@ -10,6 +10,7 @@
 #include "src/base/macros.h"
 #include "src/compiler/code-assembler.h"
 #include "src/globals.h"
+#include "src/message-template.h"
 #include "src/objects.h"
 #include "src/objects/arguments.h"
 #include "src/objects/bigint.h"
@@ -28,8 +29,6 @@ enum class PrimitiveType { kBoolean, kNumber, kString, kSymbol };
 
 #define HEAP_MUTABLE_IMMOVABLE_OBJECT_LIST(V)                              \
   V(ArraySpeciesProtector, array_species_protector, ArraySpeciesProtector) \
-  V(EmptyPropertyDictionary, empty_property_dictionary,                    \
-    EmptyPropertyDictionary)                                               \
   V(PromiseSpeciesProtector, promise_species_protector,                    \
     PromiseSpeciesProtector)                                               \
   V(TypedArraySpeciesProtector, typed_array_species_protector,             \
@@ -44,6 +43,8 @@ enum class PrimitiveType { kBoolean, kNumber, kString, kSymbol };
   V(BooleanMap, boolean_map, BooleanMap)                                     \
   V(CodeMap, code_map, CodeMap)                                              \
   V(EmptyFixedArray, empty_fixed_array, EmptyFixedArray)                     \
+  V(EmptyPropertyDictionary, empty_property_dictionary,                      \
+    EmptyPropertyDictionary)                                                 \
   V(EmptySlowElementDictionary, empty_slow_element_dictionary,               \
     EmptySlowElementDictionary)                                              \
   V(empty_string, empty_string, EmptyString)                                 \
@@ -335,6 +336,11 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
     return CAST(heap_object);
   }
 
+  TNode<String> HeapObjectToString(TNode<HeapObject> heap_object, Label* fail) {
+    GotoIfNot(IsString(heap_object), fail);
+    return CAST(heap_object);
+  }
+
   TNode<HeapNumber> UnsafeCastNumberToHeapNumber(TNode<Number> p_n) {
     return CAST(p_n);
   }
@@ -407,6 +413,10 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   }
 
   TNode<Map> UnsafeCastObjectToMap(TNode<Object> p_o) { return CAST(p_o); }
+
+  TNode<String> UnsafeCastObjectToString(TNode<Object> p_o) {
+    return CAST(p_o);
+  }
 
   TNode<JSArgumentsObjectWithLength> RawCastObjectToJSArgumentsObjectWithLength(
       TNode<Object> p_o) {
@@ -534,6 +544,8 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
 #undef SMI_ARITHMETIC_BINOP
   TNode<Smi> SmiInc(TNode<Smi> value) { return SmiAdd(value, SmiConstant(1)); }
 
+  TNode<IntPtrT> TryIntPtrAdd(TNode<IntPtrT> a, TNode<IntPtrT> b,
+                              Label* if_overflow);
   TNode<Smi> TrySmiAdd(TNode<Smi> a, TNode<Smi> b, Label* if_overflow);
   TNode<Smi> TrySmiSub(TNode<Smi> a, TNode<Smi> b, Label* if_overflow);
 
@@ -960,23 +972,23 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
                            Label* if_cleared, Label* if_weak, Label* if_strong,
                            TVariable<Object>* extracted);
   // See MaybeObject for semantics of these functions.
-  TNode<BoolT> IsStrongHeapObject(TNode<MaybeObject> value);
+  TNode<BoolT> IsStrong(TNode<MaybeObject> value);
   // This variant is for overzealous checking.
-  TNode<BoolT> IsStrongHeapObject(TNode<Object> value) {
-    return IsStrongHeapObject(ReinterpretCast<MaybeObject>(value));
+  TNode<BoolT> IsStrong(TNode<Object> value) {
+    return IsStrong(ReinterpretCast<MaybeObject>(value));
   }
-  TNode<HeapObject> ToStrongHeapObject(TNode<MaybeObject> value,
-                                       Label* if_not_strong);
+  TNode<HeapObject> GetHeapObjectIfStrong(TNode<MaybeObject> value,
+                                          Label* if_not_strong);
 
-  TNode<BoolT> IsWeakOrClearedHeapObject(TNode<MaybeObject> value);
-  TNode<BoolT> IsClearedWeakHeapObject(TNode<MaybeObject> value);
-  TNode<BoolT> IsNotClearedWeakHeapObject(TNode<MaybeObject> value);
+  TNode<BoolT> IsWeakOrCleared(TNode<MaybeObject> value);
+  TNode<BoolT> IsCleared(TNode<MaybeObject> value);
+  TNode<BoolT> IsNotCleared(TNode<MaybeObject> value);
 
   // Removes the weak bit + asserts it was set.
-  TNode<HeapObject> ToWeakHeapObject(TNode<MaybeObject> value);
+  TNode<HeapObject> GetHeapObjectAssumeWeak(TNode<MaybeObject> value);
 
-  TNode<HeapObject> ToWeakHeapObject(TNode<MaybeObject> value,
-                                     Label* if_cleared);
+  TNode<HeapObject> GetHeapObjectAssumeWeak(TNode<MaybeObject> value,
+                                            Label* if_cleared);
 
   TNode<BoolT> IsWeakReferenceTo(TNode<MaybeObject> object,
                                  TNode<Object> value);
@@ -1074,9 +1086,17 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
       Label* if_hole = nullptr);
 
   Node* LoadFixedDoubleArrayElement(TNode<FixedDoubleArray> object,
-                                    TNode<Smi> index) {
+                                    TNode<Smi> index,
+                                    Label* if_hole = nullptr) {
     return LoadFixedDoubleArrayElement(object, index, MachineType::Float64(), 0,
-                                       SMI_PARAMETERS);
+                                       SMI_PARAMETERS, if_hole);
+  }
+
+  Node* LoadFixedDoubleArrayElement(TNode<FixedDoubleArray> object,
+                                    TNode<IntPtrT> index,
+                                    Label* if_hole = nullptr) {
+    return LoadFixedDoubleArrayElement(object, index, MachineType::Float64(), 0,
+                                       INTPTR_PARAMETERS, if_hole);
   }
 
   // Load an array element from a FixedArray, FixedDoubleArray or a
@@ -1097,6 +1117,9 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   TNode<IntPtrT> LoadFeedbackVectorLength(TNode<FeedbackVector>);
   TNode<Float64T> LoadDoubleWithHoleCheck(TNode<FixedDoubleArray> array,
                                           TNode<Smi> index,
+                                          Label* if_hole = nullptr);
+  TNode<Float64T> LoadDoubleWithHoleCheck(TNode<FixedDoubleArray> array,
+                                          TNode<IntPtrT> index,
                                           Label* if_hole = nullptr);
 
   // Load Float64 value by |base| + |offset| address. If the value is a double
@@ -1165,7 +1188,8 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   // Load the "prototype" property of a JSFunction.
   Node* LoadJSFunctionPrototype(Node* function, Label* if_bailout);
 
-  Node* LoadSharedFunctionInfoBytecodeArray(Node* shared);
+  TNode<BytecodeArray> LoadSharedFunctionInfoBytecodeArray(
+      SloppyTNode<SharedFunctionInfo> shared);
 
   void StoreObjectByteNoWriteBarrier(TNode<HeapObject> object, int offset,
                                      TNode<Word32T> value);
@@ -1195,6 +1219,11 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
       WriteBarrierMode barrier_mode = UPDATE_WRITE_BARRIER) {
     return StoreFixedArrayElement(object, IntPtrConstant(index), value,
                                   barrier_mode);
+  }
+  void StoreFixedArrayElement(TNode<FixedArray> object, int index,
+                              TNode<Smi> value) {
+    return StoreFixedArrayElement(object, IntPtrConstant(index), value,
+                                  SKIP_WRITE_BARRIER);
   }
 
   Node* StoreJSArrayLength(TNode<JSArray> array, TNode<Smi> length);
@@ -1230,6 +1259,10 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
       WriteBarrierMode barrier_mode = UPDATE_WRITE_BARRIER) {
     StoreFixedArrayElement(array, index, value, barrier_mode, 0,
                            SMI_PARAMETERS);
+  }
+  void StoreFixedArrayElement(TNode<FixedArray> array, TNode<IntPtrT> index,
+                              TNode<Smi> value) {
+    StoreFixedArrayElement(array, index, value, SKIP_WRITE_BARRIER, 0);
   }
 
   void StoreFixedDoubleArrayElement(
@@ -1482,6 +1515,15 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
     return result;
   }
 
+  TNode<FixedArray> AllocateFixedArrayWithHoles(TNode<IntPtrT> capacity,
+                                                AllocationFlags flags) {
+    TNode<FixedArray> result = UncheckedCast<FixedArray>(
+        AllocateFixedArray(PACKED_ELEMENTS, capacity, flags));
+    FillFixedArrayWithValue(PACKED_ELEMENTS, result, IntPtrConstant(0),
+                            capacity, RootIndex::kTheHoleValue);
+    return result;
+  }
+
   Node* AllocatePropertyArray(Node* capacity,
                               ParameterMode mode = INTPTR_PARAMETERS,
                               AllocationFlags flags = kNone);
@@ -1566,6 +1608,25 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
                            first_element, element_count, capacity, barrier_mode,
                            SMI_PARAMETERS);
   }
+
+  void JumpIfPointersFromHereAreInteresting(TNode<Object> object,
+                                            Label* interesting);
+
+  // Efficiently copy elements within a single array. The regions
+  // [src_index, src_index + length) and [dst_index, dst_index + length)
+  // can be overlapping.
+  void MoveElements(ElementsKind kind, TNode<FixedArrayBase> elements,
+                    TNode<IntPtrT> dst_index, TNode<IntPtrT> src_index,
+                    TNode<IntPtrT> length);
+
+  // Efficiently copy elements from one array to another. The ElementsKind
+  // needs to be the same. Copy from src_elements at
+  // [src_index, src_index + length) to dst_elements at
+  // [dst_index, dst_index + length).
+  void CopyElements(ElementsKind kind, TNode<FixedArrayBase> dst_elements,
+                    TNode<IntPtrT> dst_index,
+                    TNode<FixedArrayBase> src_elements,
+                    TNode<IntPtrT> src_index, TNode<IntPtrT> length);
 
   TNode<FixedArray> HeapObjectToFixedArray(TNode<HeapObject> base,
                                            Label* cast_fail);
@@ -1740,6 +1801,10 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   Node* CalculateNewElementsCapacity(Node* old_capacity,
                                      ParameterMode mode = INTPTR_PARAMETERS);
 
+  TNode<Smi> CalculateNewElementsCapacity(TNode<Smi> old_capacity) {
+    return CAST(CalculateNewElementsCapacity(old_capacity, SMI_PARAMETERS));
+  }
+
   // Tries to grow the |elements| array of given |object| to store the |key|
   // or bails out if the growing gap is too big. Returns new elements.
   Node* TryGrowElementsCapacity(Node* object, Node* elements, ElementsKind kind,
@@ -1837,16 +1902,16 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   // Throws a TypeError for {method_name} if {value} is not a JSReceiver.
   // Returns the {value}'s map.
   Node* ThrowIfNotJSReceiver(Node* context, Node* value,
-                             MessageTemplate::Template msg_template,
+                             MessageTemplate msg_template,
                              const char* method_name = nullptr);
 
-  void ThrowRangeError(Node* context, MessageTemplate::Template message,
+  void ThrowRangeError(Node* context, MessageTemplate message,
                        Node* arg0 = nullptr, Node* arg1 = nullptr,
                        Node* arg2 = nullptr);
-  void ThrowTypeError(Node* context, MessageTemplate::Template message,
+  void ThrowTypeError(Node* context, MessageTemplate message,
                       char const* arg0 = nullptr, char const* arg1 = nullptr);
-  void ThrowTypeError(Node* context, MessageTemplate::Template message,
-                      Node* arg0, Node* arg1 = nullptr, Node* arg2 = nullptr);
+  void ThrowTypeError(Node* context, MessageTemplate message, Node* arg0,
+                      Node* arg1 = nullptr, Node* arg2 = nullptr);
 
   // Type checks.
   // Check whether the map is for an object with special properties, such as a
@@ -1933,6 +1998,7 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   TNode<BoolT> IsNullOrUndefined(SloppyTNode<Object> object);
   TNode<BoolT> IsNumberDictionary(SloppyTNode<HeapObject> object);
   TNode<BoolT> IsOneByteStringInstanceType(SloppyTNode<Int32T> instance_type);
+  TNode<BoolT> HasOnlyOneByteChars(TNode<Int32T> instance_type);
   TNode<BoolT> IsPrimitiveInstanceType(SloppyTNode<Int32T> instance_type);
   TNode<BoolT> IsPrivateSymbol(SloppyTNode<HeapObject> object);
   TNode<BoolT> IsPromiseCapability(SloppyTNode<HeapObject> object);
@@ -2025,6 +2091,8 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   Node* IsHoleyFastElementsKind(Node* elements_kind);
   Node* IsElementsKindGreaterThan(Node* target_kind,
                                   ElementsKind reference_kind);
+  TNode<BoolT> IsElementsKindLessThanOrEqual(TNode<Int32T> target_kind,
+                                             ElementsKind reference_kind);
 
   // String helpers.
   // Load a character from a String (might flatten a ConsString).
@@ -2363,6 +2431,11 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   TNode<Smi> GetNumberOfElements(TNode<Dictionary> dictionary) {
     return CAST(
         LoadFixedArrayElement(dictionary, Dictionary::kNumberOfElementsIndex));
+  }
+
+  TNode<Smi> GetNumberDictionaryNumberOfElements(
+      TNode<NumberDictionary> dictionary) {
+    return GetNumberOfElements<NumberDictionary>(dictionary);
   }
 
   template <class Dictionary>
@@ -2800,6 +2873,11 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
                                        if_false);
   }
 
+  void BranchIfNumberNotEqual(TNode<Number> left, TNode<Number> right,
+                              Label* if_true, Label* if_false) {
+    BranchIfNumberEqual(left, right, if_false, if_true);
+  }
+
   void BranchIfNumberLessThan(TNode<Number> left, TNode<Number> right,
                               Label* if_true, Label* if_false) {
     BranchIfNumberRelationalComparison(Operation::kLessThan, left, right,
@@ -2948,8 +3026,7 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   }
 
   template <class... TArgs>
-  Node* MakeTypeError(MessageTemplate::Template message, Node* context,
-                      TArgs... args) {
+  Node* MakeTypeError(MessageTemplate message, Node* context, TArgs... args) {
     STATIC_ASSERT(sizeof...(TArgs) <= 3);
     Node* const make_type_error = LoadContextElement(
         LoadNativeContext(context), Context::MAKE_TYPE_ERROR_INDEX);

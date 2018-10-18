@@ -27,7 +27,6 @@ namespace compiler {
 
 #define kScratchDoubleReg xmm0
 
-
 // Adds IA-32 specific methods for decoding operands.
 class IA32OperandConverter : public InstructionOperandConverter {
  public:
@@ -187,6 +186,17 @@ class IA32OperandConverter : public InstructionOperandConverter {
       UNREACHABLE();
     }
   }
+
+  void MoveInstructionOperandToRegister(Register destination,
+                                        InstructionOperand* op) {
+    if (op->IsImmediate() || op->IsConstant()) {
+      gen_->tasm()->mov(destination, ToImmediate(op));
+    } else if (op->IsRegister()) {
+      gen_->tasm()->Move(destination, ToRegister(op));
+    } else {
+      gen_->tasm()->mov(destination, ToOperand(op));
+    }
+  }
 };
 
 
@@ -326,12 +336,8 @@ void MoveOperandIfAliasedWithPoisonRegister(Instruction* call_instruction,
     return;
   }
 
-  InstructionOperand* op = call_instruction->InputAt(poison_index);
-  if (op->IsImmediate() || op->IsConstant()) {
-    gen->tasm()->mov(kSpeculationPoisonRegister, i.ToImmediate(op));
-  } else {
-    gen->tasm()->mov(kSpeculationPoisonRegister, i.InputOperand(poison_index));
-  }
+  i.MoveInstructionOperandToRegister(kSpeculationPoisonRegister,
+                                     call_instruction->InputAt(poison_index));
 }
 
 void EmitWordLoadPoisoningIfNeeded(CodeGenerator* codegen,
@@ -430,21 +436,25 @@ void EmitWordLoadPoisoningIfNeeded(CodeGenerator* codegen,
     __ j(not_equal, &binop);                                    \
   } while (false)
 
-#define ASSEMBLE_I64ATOMIC_BINOP(instr1, instr2) \
-  do {                                           \
-    Label binop;                                 \
-    __ bind(&binop);                             \
-    __ mov(eax, i.MemoryOperand(2));             \
-    __ mov(edx, i.NextMemoryOperand(2));         \
-    __ push(i.InputRegister(0));                 \
-    __ push(i.InputRegister(1));                 \
-    __ instr1(i.InputRegister(0), eax);          \
-    __ instr2(i.InputRegister(1), edx);          \
-    __ lock();                                   \
-    __ cmpxchg8b(i.MemoryOperand(2));            \
-    __ pop(i.InputRegister(1));                  \
-    __ pop(i.InputRegister(0));                  \
-    __ j(not_equal, &binop);                     \
+#define ASSEMBLE_I64ATOMIC_BINOP(instr1, instr2)                        \
+  do {                                                                  \
+    Label binop;                                                        \
+    __ bind(&binop);                                                    \
+    TurboAssembler::AllowExplicitEbxAccessScope spill_register(tasm()); \
+    __ mov(eax, i.MemoryOperand(2));                                    \
+    __ mov(edx, i.NextMemoryOperand(2));                                \
+    __ push(ebx);                                                       \
+    frame_access_state()->IncreaseSPDelta(1);                           \
+    i.MoveInstructionOperandToRegister(ebx, instr->InputAt(0));         \
+    __ push(i.InputRegister(1));                                        \
+    __ instr1(ebx, eax);                                                \
+    __ instr2(i.InputRegister(1), edx);                                 \
+    __ lock();                                                          \
+    __ cmpxchg8b(i.MemoryOperand(2));                                   \
+    __ pop(i.InputRegister(1));                                         \
+    __ pop(ebx);                                                        \
+    frame_access_state()->IncreaseSPDelta(-1);                          \
+    __ j(not_equal, &binop);                                            \
   } while (false);
 
 #define ASSEMBLE_MOVX(mov_instr)                            \
@@ -587,7 +597,7 @@ void CodeGenerator::AssembleTailCallBeforeGap(Instruction* instr,
         LocationOperand source_location(LocationOperand::cast(source));
         __ push(source_location.GetRegister());
       } else if (source.IsImmediate()) {
-        __ push(Immediate(ImmediateOperand::cast(source).inline_value()));
+        __ Push(Immediate(ImmediateOperand::cast(source).inline_value()));
       } else {
         // Pushes of non-scalar data types is not supported.
         UNIMPLEMENTED();
@@ -666,10 +676,11 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
   switch (arch_opcode) {
     case kArchCallCodeObject: {
       MoveOperandIfAliasedWithPoisonRegister(instr, this);
-      if (HasImmediateInput(instr, 0)) {
+      InstructionOperand* op = instr->InputAt(0);
+      if (op->IsImmediate()) {
         Handle<Code> code = i.InputCode(0);
-        __ call(code, RelocInfo::CODE_TARGET);
-      } else {
+        __ Call(code, RelocInfo::CODE_TARGET);
+      } else if (op->IsRegister()) {
         Register reg = i.InputRegister(0);
         DCHECK_IMPLIES(
             HasCallDescriptorFlag(instr, CallDescriptor::kFixedTargetRegister),
@@ -680,6 +691,25 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
         } else {
           __ call(reg);
         }
+      } else {
+        CHECK(tasm()->root_array_available());
+        // This is used to allow calls to the arguments adaptor trampoline from
+        // code that only has 5 gp registers available and cannot call through
+        // an immediate. This happens when the arguments adaptor trampoline is
+        // not an embedded builtin.
+        // TODO(v8:6666): Remove once only embedded builtins are supported.
+        __ push(eax);
+        frame_access_state()->IncreaseSPDelta(1);
+        TurboAssembler::AllowExplicitEbxAccessScope read_only_access(tasm());
+        Operand virtual_call_target_register(
+            kRootRegister,
+            IsolateData::kVirtualCallTargetRegisterOffset - kRootRegisterBias);
+        __ mov(eax, i.InputOperand(0));
+        __ add(eax, Immediate(Code::kHeaderSize - kHeapObjectTag));
+        __ mov(virtual_call_target_register, eax);
+        __ pop(eax);
+        frame_access_state()->IncreaseSPDelta(-1);
+        __ call(virtual_call_target_register);
       }
       RecordCallPosition(instr);
       frame_access_state()->ClearSPDelta();
@@ -720,7 +750,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       }
       if (HasImmediateInput(instr, 0)) {
         Handle<Code> code = i.InputCode(0);
-        __ jmp(code, RelocInfo::CODE_TARGET);
+        __ Jump(code, RelocInfo::CODE_TARGET);
       } else {
         Register reg = i.InputRegister(0);
         DCHECK_IMPLIES(
@@ -1108,7 +1138,8 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       // i.InputRegister(2) ... right low word.
       // i.InputRegister(3) ... right high word.
       bool use_temp = false;
-      if (i.OutputRegister(0).code() == i.InputRegister(1).code() ||
+      if ((instr->InputAt(1)->IsRegister() &&
+           i.OutputRegister(0).code() == i.InputRegister(1).code()) ||
           i.OutputRegister(0).code() == i.InputRegister(3).code()) {
         // We cannot write to the output register directly, because it would
         // overwrite an input for adc. We have to use the temp register.
@@ -1118,9 +1149,8 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       } else {
         __ add(i.OutputRegister(0), i.InputRegister(2));
       }
-      if (i.OutputRegister(1).code() != i.InputRegister(1).code()) {
-        __ Move(i.OutputRegister(1), i.InputRegister(1));
-      }
+      i.MoveInstructionOperandToRegister(i.OutputRegister(1),
+                                         instr->InputAt(1));
       __ adc(i.OutputRegister(1), Operand(i.InputRegister(3)));
       if (use_temp) {
         __ Move(i.OutputRegister(0), i.TempRegister(0));
@@ -1133,7 +1163,8 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       // i.InputRegister(2) ... right low word.
       // i.InputRegister(3) ... right high word.
       bool use_temp = false;
-      if (i.OutputRegister(0).code() == i.InputRegister(1).code() ||
+      if ((instr->InputAt(1)->IsRegister() &&
+           i.OutputRegister(0).code() == i.InputRegister(1).code()) ||
           i.OutputRegister(0).code() == i.InputRegister(3).code()) {
         // We cannot write to the output register directly, because it would
         // overwrite an input for adc. We have to use the temp register.
@@ -1143,9 +1174,8 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       } else {
         __ sub(i.OutputRegister(0), i.InputRegister(2));
       }
-      if (i.OutputRegister(1).code() != i.InputRegister(1).code()) {
-        __ Move(i.OutputRegister(1), i.InputRegister(1));
-      }
+      i.MoveInstructionOperandToRegister(i.OutputRegister(1),
+                                         instr->InputAt(1));
       __ sbb(i.OutputRegister(1), Operand(i.InputRegister(3)));
       if (use_temp) {
         __ Move(i.OutputRegister(0), i.TempRegister(0));
@@ -1154,7 +1184,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     }
     case kIA32MulPair: {
       __ imul(i.OutputRegister(1), i.InputOperand(0));
-      __ mov(i.TempRegister(0), i.InputOperand(1));
+      i.MoveInstructionOperandToRegister(i.TempRegister(0), instr->InputAt(1));
       __ imul(i.TempRegister(0), i.InputOperand(2));
       __ add(i.OutputRegister(1), i.TempRegister(0));
       __ mov(i.OutputRegister(0), i.InputOperand(0));
@@ -1466,7 +1496,8 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ cvtsi2sd(i.OutputDoubleRegister(), i.InputOperand(0));
       break;
     case kSSEUint32ToFloat64:
-      __ Cvtui2sd(i.OutputDoubleRegister(), i.InputOperand(0));
+      __ Cvtui2sd(i.OutputDoubleRegister(), i.InputOperand(0),
+                  i.TempRegister(0));
       break;
     case kSSEFloat64ExtractLowWord32:
       if (instr->InputAt(0)->IsFPStackSlot()) {
@@ -3650,10 +3681,8 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kIA32StackCheck: {
-      ExternalReference const stack_limit =
-          ExternalReference::address_of_stack_limit(__ isolate());
       __ VerifyRootRegister();
-      __ cmp(esp, tasm()->StaticVariable(stack_limit));
+      __ CompareStackLimit(esp);
       break;
     }
     case kIA32Word32AtomicPairLoad: {
@@ -3669,10 +3698,19 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kIA32Word32AtomicPairStore: {
+      Label store;
+      __ bind(&store);
+      TurboAssembler::AllowExplicitEbxAccessScope spill_register(tasm());
       __ mov(i.TempRegister(0), i.MemoryOperand(2));
       __ mov(i.TempRegister(1), i.NextMemoryOperand(2));
+      __ push(ebx);
+      frame_access_state()->IncreaseSPDelta(1);
+      i.MoveInstructionOperandToRegister(ebx, instr->InputAt(0));
       __ lock();
       __ cmpxchg8b(i.MemoryOperand(2));
+      __ pop(ebx);
+      frame_access_state()->IncreaseSPDelta(-1);
+      __ j(not_equal, &store);
       break;
     }
     case kWord32AtomicExchangeInt8: {
@@ -3701,10 +3739,19 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     }
     case kIA32Word32AtomicPairExchange: {
       DCHECK(VerifyOutputOfAtomicPairInstr(&i, instr));
+      Label exchange;
+      __ bind(&exchange);
+      TurboAssembler::AllowExplicitEbxAccessScope spill_ebx(tasm());
       __ mov(eax, i.MemoryOperand(2));
       __ mov(edx, i.NextMemoryOperand(2));
+      __ push(ebx);
+      frame_access_state()->IncreaseSPDelta(1);
+      i.MoveInstructionOperandToRegister(ebx, instr->InputAt(0));
       __ lock();
       __ cmpxchg8b(i.MemoryOperand(2));
+      __ pop(ebx);
+      frame_access_state()->IncreaseSPDelta(-1);
+      __ j(not_equal, &exchange);
       break;
     }
     case kWord32AtomicCompareExchangeInt8: {
@@ -3737,8 +3784,14 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kIA32Word32AtomicPairCompareExchange: {
+      TurboAssembler::AllowExplicitEbxAccessScope spill_ebx(tasm());
+      __ push(ebx);
+      frame_access_state()->IncreaseSPDelta(1);
+      i.MoveInstructionOperandToRegister(ebx, instr->InputAt(2));
       __ lock();
       __ cmpxchg8b(i.MemoryOperand(4));
+      __ pop(ebx);
+      frame_access_state()->IncreaseSPDelta(-1);
       break;
     }
 #define ATOMIC_BINOP_CASE(op, inst)                       \
@@ -3787,24 +3840,28 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       DCHECK(VerifyOutputOfAtomicPairInstr(&i, instr));
       Label binop;
       __ bind(&binop);
+      TurboAssembler::AllowExplicitEbxAccessScope spill_register(tasm());
       // Move memory operand into edx:eax
       __ mov(eax, i.MemoryOperand(2));
       __ mov(edx, i.NextMemoryOperand(2));
       // Save input registers temporarily on the stack.
-      __ push(i.InputRegister(0));
+      __ push(ebx);
+      frame_access_state()->IncreaseSPDelta(1);
+      i.MoveInstructionOperandToRegister(ebx, instr->InputAt(0));
       __ push(i.InputRegister(1));
       // Negate input in place
-      __ neg(i.InputRegister(0));
+      __ neg(ebx);
       __ adc(i.InputRegister(1), 0);
       __ neg(i.InputRegister(1));
       // Add memory operand, negated input.
-      __ add(i.InputRegister(0), eax);
+      __ add(ebx, eax);
       __ adc(i.InputRegister(1), edx);
       __ lock();
       __ cmpxchg8b(i.MemoryOperand(2));
       // Restore input registers
       __ pop(i.InputRegister(1));
-      __ pop(i.InputRegister(0));
+      __ pop(ebx);
+      frame_access_state()->IncreaseSPDelta(-1);
       __ j(not_equal, &binop);
       break;
     }
@@ -4193,6 +4250,18 @@ void CodeGenerator::AssembleConstructFrame() {
       __ StubPrologue(info()->GetOutputStackFrameType());
       if (call_descriptor->IsWasmFunctionCall()) {
         __ push(kWasmInstanceRegister);
+      } else if (call_descriptor->IsWasmImportWrapper()) {
+        // WASM import wrappers are passed a tuple in the place of the instance.
+        // Unpack the tuple into the instance and the target callable.
+        // This must be done here in the codegen because it cannot be expressed
+        // properly in the graph.
+        __ mov(kJSFunctionRegister,
+               Operand(kWasmInstanceRegister,
+                       Tuple2::kValue2Offset - kHeapObjectTag));
+        __ mov(kWasmInstanceRegister,
+               Operand(kWasmInstanceRegister,
+                       Tuple2::kValue1Offset - kHeapObjectTag));
+        __ push(kWasmInstanceRegister);
       }
     }
   }
@@ -4260,6 +4329,7 @@ void CodeGenerator::AssembleConstructFrame() {
 
   if (saves != 0) {  // Save callee-saved registers.
     DCHECK(!info()->is_osr());
+    TurboAssembler::AllowExplicitEbxAccessScope spill_register(tasm());
     for (int i = Register::kNumRegisters - 1; i >= 0; i--) {
       if (((1 << i) & saves)) __ push(Register::from_code(i));
     }
@@ -4282,6 +4352,7 @@ void CodeGenerator::AssembleReturn(InstructionOperand* pop) {
       __ add(esp, Immediate(returns * kPointerSize));
     }
     for (int i = 0; i < Register::kNumRegisters; i++) {
+      TurboAssembler::AllowExplicitEbxAccessScope reload_register(tasm());
       if (!((1 << i) & saves)) continue;
       __ pop(Register::from_code(i));
     }
@@ -4428,11 +4499,7 @@ void CodeGenerator::AssembleMove(InstructionOperand* source,
       Constant src = g.ToConstant(source);
       Operand dst = g.ToOperand(destination);
       if (destination->IsStackSlot()) {
-        if (src.type() == Constant::kHeapObject) {
-          __ mov(dst, src.ToHeapObject());
-        } else {
-          __ Move(dst, g.ToImmediate(source));
-        }
+        __ Move(dst, g.ToImmediate(source));
       } else {
         DCHECK(destination->IsFPStackSlot());
         if (src.type() == Constant::kFloat32) {

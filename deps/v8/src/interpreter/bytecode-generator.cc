@@ -1076,7 +1076,7 @@ void BytecodeGenerator::GenerateBytecodeBody() {
 
   // Create a generator object if necessary and initialize the
   // {.generator_object} variable.
-  if (info()->literal()->CanSuspend()) {
+  if (IsResumableFunction(info()->literal()->kind())) {
     BuildGeneratorObjectVariableInitialization();
   }
 
@@ -1122,7 +1122,7 @@ void BytecodeGenerator::GenerateBytecodeBody() {
 }
 
 void BytecodeGenerator::AllocateTopLevelRegisters() {
-  if (info()->literal()->CanSuspend()) {
+  if (IsResumableFunction(info()->literal()->kind())) {
     // Either directly use generator_object_var or allocate a new register for
     // the incoming generator object.
     Variable* generator_object_var = closure_scope()->generator_object_var();
@@ -1827,7 +1827,7 @@ bool BytecodeGenerator::ShouldOptimizeAsOneShot() const {
   return info()->literal()->is_toplevel() || is_toplevel_iife;
 }
 
-void BytecodeGenerator::BuildClassLiteral(ClassLiteral* expr) {
+void BytecodeGenerator::BuildClassLiteral(ClassLiteral* expr, Register name) {
   size_t class_boilerplate_entry =
       builder()->AllocateDeferredConstantPoolEntry();
   class_literals_.push_back(std::make_pair(expr, class_boilerplate_entry));
@@ -1940,6 +1940,24 @@ void BytecodeGenerator::BuildClassLiteral(ClassLiteral* expr) {
   }
 
   if (expr->static_fields_initializer() != nullptr) {
+    // TODO(gsathya): This can be optimized away to be a part of the
+    // class boilerplate in the future. The name argument can be
+    // passed to the DefineClass runtime function and have it set
+    // there.
+    if (name.is_valid()) {
+      Register key = register_allocator()->NewRegister();
+      builder()
+          ->LoadLiteral(ast_string_constants()->name_string())
+          .StoreAccumulatorInRegister(key);
+
+      DataPropertyInLiteralFlags data_property_flags =
+          DataPropertyInLiteralFlag::kNoFlags;
+      FeedbackSlot slot =
+          feedback_spec()->AddStoreDataPropertyInLiteralICSlot();
+      builder()->LoadAccumulatorWithRegister(name).StoreDataPropertyInLiteral(
+          class_constructor, key, data_property_flags, feedback_index(slot));
+    }
+
     RegisterList args = register_allocator()->NewRegisterList(1);
     Register initializer =
         VisitForRegisterValue(expr->static_fields_initializer());
@@ -1961,14 +1979,18 @@ void BytecodeGenerator::BuildClassLiteral(ClassLiteral* expr) {
 }
 
 void BytecodeGenerator::VisitClassLiteral(ClassLiteral* expr) {
+  VisitClassLiteral(expr, Register::invalid_value());
+}
+
+void BytecodeGenerator::VisitClassLiteral(ClassLiteral* expr, Register name) {
   CurrentScope current_scope(this, expr->scope());
   DCHECK_NOT_NULL(expr->scope());
   if (expr->scope()->NeedsContext()) {
     BuildNewLocalBlockContext(expr->scope());
     ContextScope scope(this, expr->scope());
-    BuildClassLiteral(expr);
+    BuildClassLiteral(expr, name);
   } else {
-    BuildClassLiteral(expr);
+    BuildClassLiteral(expr, name);
   }
 }
 
@@ -2318,7 +2340,20 @@ void BytecodeGenerator::VisitObjectLiteral(ObjectLiteral* expr) {
         Register key = register_allocator()->NewRegister();
         BuildLoadPropertyKey(property, key);
         builder()->SetExpressionPosition(property->value());
-        Register value = VisitForRegisterValue(property->value());
+        Register value;
+
+        // Static class fields require the name property to be set on
+        // the class, meaning we can't wait until the
+        // StoreDataPropertyInLiteral call later to set the name.
+        if (property->value()->IsClassLiteral() &&
+            property->value()->AsClassLiteral()->static_fields_initializer() !=
+                nullptr) {
+          value = register_allocator()->NewRegister();
+          VisitClassLiteral(property->value()->AsClassLiteral(), key);
+          builder()->StoreAccumulatorInRegister(value);
+        } else {
+          value = VisitForRegisterValue(property->value());
+        }
         VisitSetHomeObject(value, literal, property);
 
         DataPropertyInLiteralFlags data_property_flags =
@@ -2713,18 +2748,13 @@ void BytecodeGenerator::BuildAsyncReturn(int source_position) {
         .CallRuntime(Runtime::kInlineAsyncGeneratorResolve, args);
   } else {
     DCHECK(IsAsyncFunction(info()->literal()->kind()));
-    RegisterList args = register_allocator()->NewRegisterList(2);
-    Register promise = args[0];
-    Register return_value = args[1];
-    builder()->StoreAccumulatorInRegister(return_value);
-
-    Variable* var_promise = closure_scope()->promise_var();
-    DCHECK_NOT_NULL(var_promise);
-    BuildVariableLoad(var_promise, HoleCheckMode::kElided);
+    RegisterList args = register_allocator()->NewRegisterList(3);
     builder()
-        ->StoreAccumulatorInRegister(promise)
-        .CallRuntime(Runtime::kInlineResolvePromise, args)
-        .LoadAccumulatorWithRegister(promise);
+        ->MoveRegister(generator_object(), args[0])  // generator
+        .StoreAccumulatorInRegister(args[1])         // value
+        .LoadBoolean(info()->literal()->CanSuspend())
+        .StoreAccumulatorInRegister(args[2])  // can_suspend
+        .CallRuntime(Runtime::kInlineAsyncFunctionResolve, args);
   }
 
   BuildReturn(source_position);
@@ -3396,35 +3426,21 @@ void BytecodeGenerator::BuildAwait(Expression* await_expr) {
     // Await(operand) and suspend.
     RegisterAllocationScope register_scope(this);
 
-    int await_builtin_context_index;
-    RegisterList args;
+    Runtime::FunctionId await_intrinsic_id;
     if (IsAsyncGeneratorFunction(function_kind())) {
-      await_builtin_context_index =
-          catch_prediction() == HandlerTable::ASYNC_AWAIT
-              ? Context::ASYNC_GENERATOR_AWAIT_UNCAUGHT
-              : Context::ASYNC_GENERATOR_AWAIT_CAUGHT;
-      args = register_allocator()->NewRegisterList(2);
-      builder()
-          ->MoveRegister(generator_object(), args[0])
-          .StoreAccumulatorInRegister(args[1]);
+      await_intrinsic_id = catch_prediction() == HandlerTable::ASYNC_AWAIT
+                               ? Runtime::kInlineAsyncGeneratorAwaitUncaught
+                               : Runtime::kInlineAsyncGeneratorAwaitCaught;
     } else {
-      await_builtin_context_index =
-          catch_prediction() == HandlerTable::ASYNC_AWAIT
-              ? Context::ASYNC_FUNCTION_AWAIT_UNCAUGHT_INDEX
-              : Context::ASYNC_FUNCTION_AWAIT_CAUGHT_INDEX;
-      args = register_allocator()->NewRegisterList(3);
-      builder()
-          ->MoveRegister(generator_object(), args[0])
-          .StoreAccumulatorInRegister(args[1]);
-
-      // AsyncFunction Await builtins require a 3rd parameter to hold the outer
-      // promise.
-      Variable* var_promise = closure_scope()->promise_var();
-      BuildVariableLoadForAccumulatorValue(var_promise, HoleCheckMode::kElided);
-      builder()->StoreAccumulatorInRegister(args[2]);
+      await_intrinsic_id = catch_prediction() == HandlerTable::ASYNC_AWAIT
+                               ? Runtime::kInlineAsyncFunctionAwaitUncaught
+                               : Runtime::kInlineAsyncFunctionAwaitCaught;
     }
-
-    builder()->CallJSRuntime(await_builtin_context_index, args);
+    RegisterList args = register_allocator()->NewRegisterList(2);
+    builder()
+        ->MoveRegister(generator_object(), args[0])
+        .StoreAccumulatorInRegister(args[1])
+        .CallRuntime(await_intrinsic_id, args);
   }
 
   BuildSuspendPoint(await_expr);
@@ -4889,7 +4905,7 @@ void BytecodeGenerator::VisitNewTargetVariable(Variable* variable) {
   // to pass in the generator object.  In ordinary calls, new.target is always
   // undefined because generator functions are non-constructible, so don't
   // assign anything to the new.target variable.
-  if (info()->literal()->CanSuspend()) return;
+  if (IsResumableFunction(info()->literal()->kind())) return;
 
   if (variable->location() == VariableLocation::LOCAL) {
     // The new.target register was already assigned by entry trampoline.
@@ -4909,10 +4925,15 @@ void BytecodeGenerator::BuildGeneratorObjectVariableInitialization() {
   Variable* generator_object_var = closure_scope()->generator_object_var();
   RegisterAllocationScope register_scope(this);
   RegisterList args = register_allocator()->NewRegisterList(2);
+  Runtime::FunctionId function_id =
+      (IsAsyncFunction(info()->literal()->kind()) &&
+       !IsAsyncGeneratorFunction(info()->literal()->kind()))
+          ? Runtime::kInlineAsyncFunctionEnter
+          : Runtime::kInlineCreateJSGeneratorObject;
   builder()
       ->MoveRegister(Register::function_closure(), args[0])
       .MoveRegister(builder()->Receiver(), args[1])
-      .CallRuntime(Runtime::kInlineCreateJSGeneratorObject, args)
+      .CallRuntime(function_id, args)
       .StoreAccumulatorInRegister(generator_object());
 
   if (generator_object_var->location() == VariableLocation::LOCAL) {
@@ -5108,7 +5129,7 @@ LanguageMode BytecodeGenerator::language_mode() const {
 }
 
 Register BytecodeGenerator::generator_object() const {
-  DCHECK(info()->literal()->CanSuspend());
+  DCHECK(IsResumableFunction(info()->literal()->kind()));
   return incoming_new_target_or_generator_;
 }
 

@@ -26,7 +26,7 @@
 #include "src/interpreter/interpreter.h"
 #include "src/isolate-inl.h"
 #include "src/log-inl.h"
-#include "src/messages.h"
+#include "src/message-template.h"
 #include "src/objects/map.h"
 #include "src/optimized-compilation-info.h"
 #include "src/parsing/parse-info.h"
@@ -818,6 +818,23 @@ MaybeHandle<SharedFunctionInfo> FinalizeTopLevel(
     script->set_compilation_state(Script::COMPILATION_STATE_COMPILED);
   }
 
+  // Register any pending parallel tasks with the associated SFI.
+  if (parse_info->parallel_tasks()) {
+    CompilerDispatcher* dispatcher = parse_info->parallel_tasks()->dispatcher();
+    for (auto& it : *parse_info->parallel_tasks()) {
+      FunctionLiteral* literal = it.first;
+      CompilerDispatcher::JobId job_id = it.second;
+      MaybeHandle<SharedFunctionInfo> maybe_shared_for_task =
+          script->FindSharedFunctionInfo(isolate, literal);
+      Handle<SharedFunctionInfo> shared_for_task;
+      if (maybe_shared_for_task.ToHandle(&shared_for_task)) {
+        dispatcher->RegisterSharedFunctionInfo(job_id, *shared_for_task);
+      } else {
+        dispatcher->AbortJob(job_id);
+      }
+    }
+  }
+
   return shared_info;
 }
 
@@ -937,7 +954,6 @@ BackgroundCompileTask::BackgroundCompileTask(
 
   // Get preparsed scope data from the function literal.
   if (function_literal->produced_preparsed_scope_data()) {
-    DCHECK(FLAG_preparser_scope_analysis);
     ZonePreParsedScopeData* serialized_data =
         function_literal->produced_preparsed_scope_data()->Serialize(
             info_->zone());
@@ -945,6 +961,8 @@ BackgroundCompileTask::BackgroundCompileTask(
         ConsumedPreParsedScopeData::For(info_->zone(), serialized_data));
   }
 }
+
+BackgroundCompileTask::~BackgroundCompileTask() = default;
 
 namespace {
 
@@ -1069,15 +1087,12 @@ bool Compiler::Compile(Handle<SharedFunctionInfo> shared_info,
     return true;
   }
 
-  if (FLAG_preparser_scope_analysis) {
-    if (shared_info->HasUncompiledDataWithPreParsedScope()) {
-      parse_info.set_consumed_preparsed_scope_data(
-          ConsumedPreParsedScopeData::For(
-              isolate,
-              handle(shared_info->uncompiled_data_with_pre_parsed_scope()
-                         ->pre_parsed_scope_data(),
-                     isolate)));
-    }
+  if (shared_info->HasUncompiledDataWithPreParsedScope()) {
+    parse_info.set_consumed_preparsed_scope_data(
+        ConsumedPreParsedScopeData::For(
+            isolate, handle(shared_info->uncompiled_data_with_pre_parsed_scope()
+                                ->pre_parsed_scope_data(),
+                            isolate)));
   }
 
   // Parse and update ParseInfo with the results.

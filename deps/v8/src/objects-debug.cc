@@ -38,7 +38,10 @@
 #include "src/objects/js-regexp-string-iterator-inl.h"
 #ifdef V8_INTL_SUPPORT
 #include "src/objects/js-relative-time-format-inl.h"
+#include "src/objects/js-segment-iterator-inl.h"
+#include "src/objects/js-segmenter-inl.h"
 #endif  // V8_INTL_SUPPORT
+#include "src/objects/js-weak-refs-inl.h"
 #include "src/objects/literal-objects-inl.h"
 #include "src/objects/maybe-object.h"
 #include "src/objects/microtask-inl.h"
@@ -248,6 +251,9 @@ void HeapObject::HeapObjectVerify(Isolate* isolate) {
     case JS_GENERATOR_OBJECT_TYPE:
       JSGeneratorObject::cast(this)->JSGeneratorObjectVerify(isolate);
       break;
+    case JS_ASYNC_FUNCTION_OBJECT_TYPE:
+      JSAsyncFunctionObject::cast(this)->JSAsyncFunctionObjectVerify(isolate);
+      break;
     case JS_ASYNC_GENERATOR_OBJECT_TYPE:
       JSAsyncGeneratorObject::cast(this)->JSAsyncGeneratorObjectVerify(isolate);
       break;
@@ -305,6 +311,16 @@ void HeapObject::HeapObjectVerify(Isolate* isolate) {
     case JS_ASYNC_FROM_SYNC_ITERATOR_TYPE:
       JSAsyncFromSyncIterator::cast(this)->JSAsyncFromSyncIteratorVerify(
           isolate);
+      break;
+    case JS_WEAK_CELL_TYPE:
+      JSWeakCell::cast(this)->JSWeakCellVerify(isolate);
+      break;
+    case JS_WEAK_FACTORY_TYPE:
+      JSWeakFactory::cast(this)->JSWeakFactoryVerify(isolate);
+      break;
+    case JS_WEAK_FACTORY_CLEANUP_ITERATOR_TYPE:
+      JSWeakFactoryCleanupIterator::cast(this)
+          ->JSWeakFactoryCleanupIteratorVerify(isolate);
       break;
     case JS_WEAK_MAP_TYPE:
       JSWeakMap::cast(this)->JSWeakMapVerify(isolate);
@@ -388,6 +404,12 @@ void HeapObject::HeapObjectVerify(Isolate* isolate) {
       break;
     case JS_INTL_RELATIVE_TIME_FORMAT_TYPE:
       JSRelativeTimeFormat::cast(this)->JSRelativeTimeFormatVerify(isolate);
+      break;
+    case JS_INTL_SEGMENT_ITERATOR_TYPE:
+      JSSegmentIterator::cast(this)->JSSegmentIteratorVerify(isolate);
+      break;
+    case JS_INTL_SEGMENTER_TYPE:
+      JSSegmenter::cast(this)->JSSegmenterVerify(isolate);
       break;
 #endif  // V8_INTL_SUPPORT
 
@@ -833,6 +855,13 @@ void JSGeneratorObject::JSGeneratorObjectVerify(Isolate* isolate) {
   VerifyObjectField(isolate, kContinuationOffset);
 }
 
+void JSAsyncFunctionObject::JSAsyncFunctionObjectVerify(Isolate* isolate) {
+  // Check inherited fields
+  JSGeneratorObjectVerify(isolate);
+  VerifyObjectField(isolate, kPromiseOffset);
+  promise()->HeapObjectVerify(isolate);
+}
+
 void JSAsyncGeneratorObject::JSAsyncGeneratorObjectVerify(Isolate* isolate) {
   // Check inherited fields
   JSGeneratorObjectVerify(isolate);
@@ -1209,6 +1238,44 @@ void JSMapIterator::JSMapIteratorVerify(Isolate* isolate) {
   CHECK(index()->IsSmi());
 }
 
+void JSWeakCell::JSWeakCellVerify(Isolate* isolate) {
+  CHECK(IsJSWeakCell());
+  JSObjectVerify(isolate);
+
+  CHECK(next()->IsJSWeakCell() || next()->IsUndefined(isolate));
+  if (next()->IsJSWeakCell()) {
+    CHECK_EQ(JSWeakCell::cast(next())->prev(), this);
+  }
+  CHECK(prev()->IsJSWeakCell() || prev()->IsUndefined(isolate));
+  if (prev()->IsJSWeakCell()) {
+    CHECK_EQ(JSWeakCell::cast(prev())->next(), this);
+  }
+
+  CHECK(factory()->IsJSWeakFactory());
+}
+
+void JSWeakFactory::JSWeakFactoryVerify(Isolate* isolate) {
+  CHECK(IsJSWeakFactory());
+  JSObjectVerify(isolate);
+  VerifyHeapPointer(isolate, cleanup());
+  CHECK(active_cells()->IsUndefined(isolate) || active_cells()->IsJSWeakCell());
+  if (active_cells()->IsJSWeakCell()) {
+    CHECK(JSWeakCell::cast(active_cells())->prev()->IsUndefined(isolate));
+  }
+  CHECK(cleared_cells()->IsUndefined(isolate) ||
+        cleared_cells()->IsJSWeakCell());
+  if (cleared_cells()->IsJSWeakCell()) {
+    CHECK(JSWeakCell::cast(cleared_cells())->prev()->IsUndefined(isolate));
+  }
+}
+
+void JSWeakFactoryCleanupIterator::JSWeakFactoryCleanupIteratorVerify(
+    Isolate* isolate) {
+  CHECK(IsJSWeakFactoryCleanupIterator());
+  JSObjectVerify(isolate);
+  VerifyHeapPointer(isolate, factory());
+}
+
 void JSWeakMap::JSWeakMapVerify(Isolate* isolate) {
   CHECK(IsJSWeakMap());
   JSObjectVerify(isolate);
@@ -1284,7 +1351,8 @@ void PromiseReactionJobTask::PromiseReactionJobTaskVerify(Isolate* isolate) {
   CHECK(handler()->IsUndefined(isolate) || handler()->IsCallable());
   VerifyHeapPointer(isolate, promise_or_capability());
   CHECK(promise_or_capability()->IsJSPromise() ||
-        promise_or_capability()->IsPromiseCapability());
+        promise_or_capability()->IsPromiseCapability() ||
+        promise_or_capability()->IsUndefined(isolate));
 }
 
 void MicrotaskQueue::MicrotaskQueueVerify(Isolate* isolate) {
@@ -1343,7 +1411,8 @@ void PromiseReaction::PromiseReactionVerify(Isolate* isolate) {
         fulfill_handler()->IsCallable());
   VerifyHeapPointer(isolate, promise_or_capability());
   CHECK(promise_or_capability()->IsJSPromise() ||
-        promise_or_capability()->IsPromiseCapability());
+        promise_or_capability()->IsPromiseCapability() ||
+        promise_or_capability()->IsUndefined(isolate));
 }
 
 void JSPromise::JSPromiseVerify(Isolate* isolate) {
@@ -1927,11 +1996,9 @@ void JSLocale::JSLocaleVerify(Isolate* isolate) {
   VerifyObjectField(isolate, kBaseNameOffset);
   VerifyObjectField(isolate, kLocaleOffset);
   // Unicode extension fields.
+  VerifyObjectField(isolate, kFlagsOffset);
   VerifyObjectField(isolate, kCalendarOffset);
-  VerifyObjectField(isolate, kCaseFirstOffset);
   VerifyObjectField(isolate, kCollationOffset);
-  VerifyObjectField(isolate, kHourCycleOffset);
-  VerifyObjectField(isolate, kNumericOffset);
   VerifyObjectField(isolate, kNumberingSystemOffset);
 }
 
@@ -1939,7 +2006,7 @@ void JSNumberFormat::JSNumberFormatVerify(Isolate* isolate) {
   CHECK(IsJSNumberFormat());
   JSObjectVerify(isolate);
   VerifyObjectField(isolate, kLocaleOffset);
-  VerifyObjectField(isolate, kIcuNumberFormatOffset);
+  VerifyObjectField(isolate, kICUNumberFormatOffset);
   VerifyObjectField(isolate, kBoundFormatOffset);
   VerifyObjectField(isolate, kFlagsOffset);
 }
@@ -1957,6 +2024,20 @@ void JSRelativeTimeFormat::JSRelativeTimeFormatVerify(Isolate* isolate) {
   JSObjectVerify(isolate);
   VerifyObjectField(isolate, kLocaleOffset);
   VerifyObjectField(isolate, kICUFormatterOffset);
+  VerifyObjectField(isolate, kFlagsOffset);
+}
+
+void JSSegmentIterator::JSSegmentIteratorVerify(Isolate* isolate) {
+  JSObjectVerify(isolate);
+  VerifyObjectField(isolate, kICUBreakIteratorOffset);
+  VerifyObjectField(isolate, kUnicodeStringOffset);
+  VerifyObjectField(isolate, kFlagsOffset);
+}
+
+void JSSegmenter::JSSegmenterVerify(Isolate* isolate) {
+  JSObjectVerify(isolate);
+  VerifyObjectField(isolate, kLocaleOffset);
+  VerifyObjectField(isolate, kICUBreakIteratorOffset);
   VerifyObjectField(isolate, kFlagsOffset);
 }
 #endif  // V8_INTL_SUPPORT
@@ -2150,33 +2231,32 @@ bool TransitionsAccessor::IsConsistentWithBackPointers() {
 // Estimates if there is a path from the object to a context.
 // This function is not precise, and can return false even if
 // there is a path to a context.
-bool CanLeak(Object* obj, Heap* heap) {
+bool CanLeak(Object* obj, Isolate* isolate) {
   if (!obj->IsHeapObject()) return false;
   if (obj->IsCell()) {
-    return CanLeak(Cell::cast(obj)->value(), heap);
+    return CanLeak(Cell::cast(obj)->value(), isolate);
   }
   if (obj->IsPropertyCell()) {
-    return CanLeak(PropertyCell::cast(obj)->value(), heap);
+    return CanLeak(PropertyCell::cast(obj)->value(), isolate);
   }
   if (obj->IsContext()) return true;
   if (obj->IsMap()) {
     Map* map = Map::cast(obj);
-    for (RootIndex root_index = RootIndex::kFirstStrongRoot;
-         root_index <= RootIndex::kLastStrongRoot; ++root_index) {
-      if (map == heap->root(root_index)) return false;
+    for (RootIndex root_index = RootIndex::kFirstStrongOrReadOnlyRoot;
+         root_index <= RootIndex::kLastStrongOrReadOnlyRoot; ++root_index) {
+      if (map == isolate->root(root_index)) return false;
     }
     return true;
   }
-  return CanLeak(HeapObject::cast(obj)->map(), heap);
+  return CanLeak(HeapObject::cast(obj)->map(), isolate);
 }
 
 void Code::VerifyEmbeddedObjects(Isolate* isolate, VerifyMode mode) {
   if (kind() == OPTIMIZED_FUNCTION) return;
-  Heap* heap = isolate->heap();
   int mask = RelocInfo::ModeMask(RelocInfo::EMBEDDED_OBJECT);
   for (RelocIterator it(this, mask); !it.done(); it.next()) {
     Object* target = it.rinfo()->target_object();
-    DCHECK(!CanLeak(target, heap));
+    DCHECK(!CanLeak(target, isolate));
   }
 }
 

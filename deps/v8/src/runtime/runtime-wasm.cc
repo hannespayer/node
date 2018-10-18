@@ -8,6 +8,7 @@
 #include "src/debug/debug.h"
 #include "src/frame-constants.h"
 #include "src/heap/factory.h"
+#include "src/message-template.h"
 #include "src/objects-inl.h"
 #include "src/objects/frame-array-inl.h"
 #include "src/runtime/runtime-utils.h"
@@ -75,7 +76,7 @@ RUNTIME_FUNCTION(Runtime_ThrowWasmError) {
 
   HandleScope scope(isolate);
   Handle<Object> error_obj = isolate->factory()->NewWasmRuntimeError(
-      static_cast<MessageTemplate::Template>(message_id));
+      MessageTemplateFromInt(message_id));
   return isolate->Throw(*error_obj);
 }
 
@@ -105,8 +106,7 @@ RUNTIME_FUNCTION(Runtime_WasmThrowCreate) {
   // TODO(mstarzinger): Manually box because parameters are not visited yet.
   Handle<Object> tag(tag_raw, isolate);
   Handle<Object> exception = isolate->factory()->NewWasmRuntimeError(
-      static_cast<MessageTemplate::Template>(
-          MessageTemplate::kWasmExceptionError));
+      MessageTemplate::kWasmExceptionError);
   CHECK(
       !JSReceiver::SetProperty(isolate, exception,
                                isolate->factory()->wasm_exception_tag_symbol(),
@@ -163,6 +163,7 @@ RUNTIME_FUNCTION(Runtime_WasmExceptionGetElement) {
         Handle<JSTypedArray> values = Handle<JSTypedArray>::cast(values_obj);
         CHECK_EQ(values->type(), kExternalUint16Array);
         CONVERT_SMI_ARG_CHECKED(index, 1);
+        CHECK(!values->WasNeutered());
         CHECK_LT(index, Smi::ToInt(values->length()));
         auto* vals =
             reinterpret_cast<uint16_t*>(values->GetBuffer()->backing_store());
@@ -193,6 +194,7 @@ RUNTIME_FUNCTION(Runtime_WasmExceptionSetElement) {
         Handle<JSTypedArray> values = Handle<JSTypedArray>::cast(values_obj);
         CHECK_EQ(values->type(), kExternalUint16Array);
         CONVERT_SMI_ARG_CHECKED(index, 1);
+        CHECK(!values->WasNeutered());
         CHECK_LT(index, Smi::ToInt(values->length()));
         CONVERT_SMI_ARG_CHECKED(value, 2);
         auto* vals =

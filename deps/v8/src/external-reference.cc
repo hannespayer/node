@@ -384,7 +384,7 @@ ExternalReference ExternalReference::log_leave_external_function() {
 }
 
 ExternalReference ExternalReference::roots_array_start(Isolate* isolate) {
-  return ExternalReference(isolate->heap()->roots_array_start());
+  return ExternalReference(isolate->roots_array_start());
 }
 
 ExternalReference ExternalReference::allocation_sites_list_address(
@@ -457,6 +457,11 @@ ExternalReference ExternalReference::address_of_pending_message_obj(
 
 ExternalReference ExternalReference::abort_with_reason() {
   return ExternalReference(Redirect(FUNCTION_ADDR(i::abort_with_reason)));
+}
+
+ExternalReference
+ExternalReference::address_of_harmony_await_optimization_flag() {
+  return ExternalReference(&FLAG_harmony_await_optimization);
 }
 
 ExternalReference ExternalReference::address_of_min_int() {
@@ -728,6 +733,12 @@ template <typename SubjectChar, typename PatternChar>
 ExternalReference ExternalReference::search_string_raw() {
   auto f = SearchStringRaw<SubjectChar, PatternChar>;
   return ExternalReference(Redirect(FUNCTION_ADDR(f)));
+}
+
+ExternalReference
+ExternalReference::jsarray_array_join_concat_to_sequential_string() {
+  return ExternalReference(
+      Redirect(FUNCTION_ADDR(JSArray::ArrayJoinConcatToSequentialString)));
 }
 
 ExternalReference ExternalReference::search_string_raw_one_one() {

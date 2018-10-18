@@ -13,15 +13,15 @@ vars = {
 
 deps = {
   'v8/build':
-    Var('chromium_url') + '/chromium/src/build.git' + '@' + '29568c1af459b70973d58077d33e0ac196da22a6',
+    Var('chromium_url') + '/chromium/src/build.git' + '@' + '5839d1c9c67c68383d3fad086b081944ced52bfe',
   'v8/third_party/depot_tools':
-    Var('chromium_url') + '/chromium/tools/depot_tools.git' + '@' + 'b250ec16d39169c4f7df3f9ae40230934d0f4ddb',
+    Var('chromium_url') + '/chromium/tools/depot_tools.git' + '@' + '08faab99d41bd4f1f727267586ff28a227f80cd3',
   'v8/third_party/icu':
-    Var('chromium_url') + '/chromium/deps/icu.git' + '@' + 'c52a2a250d6c5f5cbdd015dff36af7c5d0ae1150',
+    Var('chromium_url') + '/chromium/deps/icu.git' + '@' + 'ccad4472126e35ccd1d19bea38b6675802d40472',
   'v8/third_party/instrumented_libraries':
     Var('chromium_url') + '/chromium/src/third_party/instrumented_libraries.git' + '@' + 'a90cbf3b4216430a437991fb53ede8e048dea454',
   'v8/buildtools':
-    Var('chromium_url') + '/chromium/buildtools.git' + '@' + '2dff9c9c74e9d732e6fe57c84ef7fd044cc45d96',
+    Var('chromium_url') + '/chromium/buildtools.git' + '@' + '13a00f110ef910a25763346d6538b60f12845656',
   'v8/base/trace_event/common':
     Var('chromium_url') + '/chromium/src/base/trace_event/common.git' + '@' + '211b3ed9d0481b4caddbee1322321b86a483ca1f',
   'v8/third_party/android_ndk': {
@@ -33,14 +33,15 @@ deps = {
     'condition': 'checkout_android',
   },
   'v8/third_party/catapult': {
-    'url': Var('chromium_url') + '/catapult.git' + '@' + '2dd914402ebcc44ecb60034e5c7b9bfa3d0c9d89',
+    'url': Var('chromium_url') + '/catapult.git' + '@' + '519565187c85418c6d1443ec24bd1012afdfb247',
+    'condition': 'checkout_android',
   },
   'v8/third_party/colorama/src': {
     'url': Var('chromium_url') + '/external/colorama.git' + '@' + '799604a1041e9b3bc5d2789ecbd7e8db2e18e6b8',
     'condition': 'checkout_android',
   },
   'v8/third_party/fuchsia-sdk': {
-    'url': Var('chromium_url') + '/chromium/src/third_party/fuchsia-sdk.git' + '@' + '6e1868c9083769d489d3fc25657339d50c22b1d8',
+    'url': Var('chromium_url') + '/chromium/src/third_party/fuchsia-sdk.git' + '@' + '6f8b55e35f7d48efdbfc3d8914e3e5e4c29a3ff3',
     'condition': 'checkout_fuchsia',
   },
   'v8/third_party/googletest/src':
@@ -56,7 +57,7 @@ deps = {
   'v8/test/mozilla/data':
     Var('chromium_url') + '/v8/deps/third_party/mozilla-tests.git' + '@' + 'f6c578a10ea707b1a8ab0b88943fe5115ce2b9be',
   'v8/test/test262/data':
-    Var('chromium_url') + '/external/github.com/tc39/test262.git' + '@' + '7e65999731cb6cd6fab10a92e8b7bd39a6b0793c',
+    Var('chromium_url') + '/external/github.com/tc39/test262.git' + '@' + '00cfe1628cc03164dcf03f01ba9c84376e9be735',
   'v8/test/test262/harness':
     Var('chromium_url') + '/external/github.com/test262-utils/test262-harness-py.git' + '@' + '0f2acdd882c84cff43b9d60df7574a1901e2cdcd',
   'v8/third_party/qemu-linux-x64': {
@@ -69,8 +70,18 @@ deps = {
       'condition': 'host_os == "linux" and checkout_fuchsia',
       'dep_type': 'cipd',
   },
+  'v8/third_party/qemu-mac-x64': {
+      'packages': [
+          {
+              'package': 'fuchsia/qemu/mac-amd64',
+              'version': '2d3358ae9a569b2d4a474f498b32b202a152134f'
+          },
+      ],
+      'condition': 'host_os == "mac" and checkout_fuchsia',
+      'dep_type': 'cipd',
+  },
   'v8/tools/clang':
-    Var('chromium_url') + '/chromium/src/tools/clang.git' + '@' + '7792d28b069af6dd3a86d1ba83b7f5c4ede605dc',
+    Var('chromium_url') + '/chromium/src/tools/clang.git' + '@' + 'a245b955fe9cd620081ed267fae303c88d033fef',
   'v8/tools/luci-go':
     Var('chromium_url') + '/chromium/src/tools/luci-go.git' + '@' + '445d7c4b6a4f10e188edb395b132e3996b127691',
   'v8/test/wasm-js':
@@ -374,6 +385,23 @@ hooks = [
       'python',
       'v8/build/fuchsia/update_sdk.py',
     ],
+  },
+  {
+    # Mac doesn't use lld so it's not included in the default clang bundle
+    # there. However, lld is need in Fuchsia cross builds, so
+    # download it there.
+    # Should run after the clang hook.
+    'name': 'lld/mac',
+    'pattern': '.',
+    'condition': 'host_os == "mac" and checkout_fuchsia',
+    'action': ['python', 'v8/tools/clang/scripts/download_lld_mac.py'],
+  },
+  {
+      # Mac does not have llvm-objdump, download it for cross builds in Fuchsia.
+    'name': 'llvm-objdump',
+    'pattern': '.',
+    'condition': 'host_os == "mac" and checkout_fuchsia',
+    'action': ['python', 'v8/tools/clang/scripts/download_objdump.py'],
   },
   {
     'name': 'mips_toolchain',

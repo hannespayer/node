@@ -133,27 +133,28 @@
   V(JSIncrement)               \
   V(JSNegate)
 
-#define JS_CREATE_OP_LIST(V)    \
-  V(JSCreate)                   \
-  V(JSCreateArguments)          \
-  V(JSCreateArray)              \
-  V(JSCreateArrayIterator)      \
-  V(JSCreateBoundFunction)      \
-  V(JSCreateClosure)            \
-  V(JSCreateCollectionIterator) \
-  V(JSCreateGeneratorObject)    \
-  V(JSCreateIterResultObject)   \
-  V(JSCreateStringIterator)     \
-  V(JSCreateKeyValueArray)      \
-  V(JSCreateObject)             \
-  V(JSCreatePromise)            \
-  V(JSCreateTypedArray)         \
-  V(JSCreateLiteralArray)       \
-  V(JSCreateEmptyLiteralArray)  \
-  V(JSCreateArrayFromIterable)  \
-  V(JSCreateLiteralObject)      \
-  V(JSCreateEmptyLiteralObject) \
-  V(JSCloneObject)              \
+#define JS_CREATE_OP_LIST(V)     \
+  V(JSCreate)                    \
+  V(JSCreateArguments)           \
+  V(JSCreateArray)               \
+  V(JSCreateArrayIterator)       \
+  V(JSCreateAsyncFunctionObject) \
+  V(JSCreateBoundFunction)       \
+  V(JSCreateClosure)             \
+  V(JSCreateCollectionIterator)  \
+  V(JSCreateGeneratorObject)     \
+  V(JSCreateIterResultObject)    \
+  V(JSCreateStringIterator)      \
+  V(JSCreateKeyValueArray)       \
+  V(JSCreateObject)              \
+  V(JSCreatePromise)             \
+  V(JSCreateTypedArray)          \
+  V(JSCreateLiteralArray)        \
+  V(JSCreateEmptyLiteralArray)   \
+  V(JSCreateArrayFromIterable)   \
+  V(JSCreateLiteralObject)       \
+  V(JSCreateEmptyLiteralObject)  \
+  V(JSCloneObject)               \
   V(JSCreateLiteralRegExp)
 
 #define JS_OBJECT_OP_LIST(V)      \
@@ -179,6 +180,12 @@
   V(JSCreateWithContext)      \
   V(JSCreateBlockContext)
 
+#define JS_CALL_OP_LIST(V) \
+  V(JSCall)                \
+  V(JSCallForwardVarargs)  \
+  V(JSCallWithArrayLike)   \
+  V(JSCallWithSpread)
+
 #define JS_CONSTRUCT_OP_LIST(V) \
   V(JSConstructForwardVarargs)  \
   V(JSConstruct)                \
@@ -186,11 +193,11 @@
   V(JSConstructWithSpread)
 
 #define JS_OTHER_OP_LIST(V)            \
+  JS_CALL_OP_LIST(V)                   \
   JS_CONSTRUCT_OP_LIST(V)              \
-  V(JSCallForwardVarargs)              \
-  V(JSCall)                            \
-  V(JSCallWithArrayLike)               \
-  V(JSCallWithSpread)                  \
+  V(JSAsyncFunctionEnter)              \
+  V(JSAsyncFunctionReject)             \
+  V(JSAsyncFunctionResolve)            \
   V(JSCallRuntime)                     \
   V(JSForInEnumerate)                  \
   V(JSForInNext)                       \

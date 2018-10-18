@@ -16,10 +16,12 @@
 #include "src/contexts.h"
 #include "src/intl.h"
 #include "src/objects.h"
+#include "src/objects/managed.h"
 #include "unicode/locid.h"
 #include "unicode/uversion.h"
 
 namespace U_ICU_NAMESPACE {
+class BreakIterator;
 class DecimalFormat;
 class SimpleDateFormat;
 class UnicodeString;
@@ -61,13 +63,11 @@ class Intl {
   static bool IsObjectOfType(Isolate* isolate, Handle<Object> object,
                              Intl::Type expected_type);
 
-  static IcuService StringToIcuService(Handle<String> service);
-
   // Gets the ICU locales for a given service. If there is a locale with a
   // script tag then the locales also include a locale without the script; eg,
   // pa_Guru_IN (language=Panjabi, script=Gurmukhi, country-India) would include
   // pa_IN.
-  static std::set<std::string> GetAvailableLocales(const IcuService& service);
+  static std::set<std::string> GetAvailableLocales(ICUService service);
 
   // Get the name of the numbering system from locale.
   // ICU doesn't expose numbering system in any way, so we have to assume that
@@ -78,45 +78,11 @@ class Intl {
   static V8_WARN_UNUSED_RESULT MaybeHandle<JSObject> AvailableLocalesOf(
       Isolate* isolate, Handle<String> service);
 
-  static MaybeHandle<JSObject> SupportedLocalesOf(Isolate* isolate,
-                                                  Handle<String> service,
-                                                  Handle<Object> locales_in,
-                                                  Handle<Object> options_in);
+  static V8_WARN_UNUSED_RESULT MaybeHandle<JSObject> SupportedLocalesOf(
+      Isolate* isolate, ICUService service, Handle<Object> locales_in,
+      Handle<Object> options_in);
 
   static std::string DefaultLocale(Isolate* isolate);
-
-  // If locale has a script tag then return true and the locale without the
-  // script else return false and an empty string
-  static bool RemoveLocaleScriptTag(const std::string& icu_locale,
-                                    std::string* locale_less_script);
-
-  // The ResolveLocale abstract operation compares a BCP 47 language
-  // priority list requestedLocales against the locales in
-  // availableLocales and determines the best available language to
-  // meet the request. availableLocales, requestedLocales, and
-  // relevantExtensionKeys must be provided as List values, options
-  // and localeData as Records.
-  //
-  // #ecma402/sec-partitiondatetimepattern
-  //
-  // Returns a JSObject with two properties:
-  //   (1) locale
-  //   (2) extension
-  //
-  // To access either, use JSObject::GetDataProperty.
-  V8_WARN_UNUSED_RESULT static MaybeHandle<JSObject> ResolveLocale(
-      Isolate* isolate, const char* service, Handle<Object> requestedLocales,
-      Handle<Object> options);
-
-  // This currently calls out to the JavaScript implementation of
-  // CanonicalizeLocaleList.
-  // Note: This is deprecated glue code, required only as long as ResolveLocale
-  // still calls a JS implementation. The C++ successor is the overloaded
-  // version below that returns a Maybe<std::vector<std::string>>.
-  //
-  // ecma402/#sec-canonicalizelocalelist
-  V8_WARN_UNUSED_RESULT static MaybeHandle<JSObject> CanonicalizeLocaleListJS(
-      Isolate* isolate, Handle<Object> locales);
 
   // ECMA402 9.2.10. GetOption( options, property, type, values, fallback)
   // ecma402/#sec-getoption
@@ -194,8 +160,9 @@ class Intl {
       Isolate* isolate, icu::DecimalFormat* number_format,
       Handle<JSReceiver> options, int mnfd_default, int mxfd_default);
 
-  icu::Locale static CreateICULocale(Isolate* isolate,
+  static icu::Locale CreateICULocale(Isolate* isolate,
                                      Handle<String> bcp47_locale_str);
+  static icu::Locale CreateICULocale(const std::string& bcp47_locale);
 
   // Helper funciton to convert a UnicodeString to a Handle<String>
   V8_WARN_UNUSED_RESULT static MaybeHandle<String> ToString(
@@ -222,10 +189,6 @@ class Intl {
                          Handle<String> additional_property_name,
                          Handle<String> additional_property_value);
 
-  // A helper function to help handle Unicode Extensions in locale.
-  static std::map<std::string, std::string> LookupUnicodeExtensions(
-    const icu::Locale& icu_locale, const std::set<std::string>& relevant_keys);
-
   // In ECMA 402 v1, Intl constructors supported a mode of operation
   // where calling them with an existing object as a receiver would
   // transform the receiver into the relevant Intl instance with all
@@ -244,6 +207,24 @@ class Intl {
   V8_WARN_UNUSED_RESULT static MaybeHandle<JSObject> CachedOrNewService(
       Isolate* isolate, Handle<String> service, Handle<Object> locales,
       Handle<Object> options, Handle<Object> internal_options);
+
+  enum MatcherOption { kBestFit, kLookup };
+
+  struct ResolvedLocale {
+    std::string locale;
+    icu::Locale icu_locale;
+    std::map<std::string, std::string> extensions;
+  };
+
+  static ResolvedLocale ResolveLocale(
+      Isolate* isolate, const std::set<std::string>& available_locales,
+      const std::vector<std::string>& requested_locales, MatcherOption options,
+      const std::set<std::string>& relevant_extension_keys);
+
+  // Utility function to set text to BreakIterator.
+  static Managed<icu::UnicodeString>* SetTextToBreakIterator(
+      Isolate* isolate, Handle<String> text,
+      icu::BreakIterator* break_iterator);
 };
 
 }  // namespace internal

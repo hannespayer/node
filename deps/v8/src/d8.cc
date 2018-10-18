@@ -1,4 +1,4 @@
-/// Copyright 2012 the V8 project authors. All rights reserved.
+// Copyright 2012 the V8 project authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -17,10 +17,6 @@
 #include "src/third_party/vtune/v8-vtune.h"
 #endif
 
-#include "src/d8-console.h"
-#include "src/d8.h"
-#include "src/ostreams.h"
-
 #include "include/libplatform/libplatform.h"
 #include "include/libplatform/v8-tracing.h"
 #include "include/v8-inspector.h"
@@ -31,11 +27,15 @@
 #include "src/base/platform/time.h"
 #include "src/base/sys-info.h"
 #include "src/basic-block-profiler.h"
+#include "src/d8-console.h"
+#include "src/d8-platforms.h"
+#include "src/d8.h"
 #include "src/debug/debug-interface.h"
 #include "src/interpreter/interpreter.h"
 #include "src/msan.h"
 #include "src/objects-inl.h"
 #include "src/objects.h"
+#include "src/ostreams.h"
 #include "src/snapshot/natives.h"
 #include "src/trap-handler/trap-handler.h"
 #include "src/utils.h"
@@ -190,89 +190,8 @@ class MockArrayBufferAllocatiorWithLimit : public MockArrayBufferAllocator {
   std::atomic<size_t> space_left_;
 };
 
-// Predictable v8::Platform implementation. Worker threads are disabled, idle
-// tasks are disallowed, and the time reported by {MonotonicallyIncreasingTime}
-// is deterministic.
-class PredictablePlatform : public Platform {
- public:
-  explicit PredictablePlatform(std::unique_ptr<Platform> platform)
-      : platform_(std::move(platform)) {
-    DCHECK_NOT_NULL(platform_);
-  }
-
-  PageAllocator* GetPageAllocator() override {
-    return platform_->GetPageAllocator();
-  }
-
-  void OnCriticalMemoryPressure() override {
-    platform_->OnCriticalMemoryPressure();
-  }
-
-  bool OnCriticalMemoryPressure(size_t length) override {
-    return platform_->OnCriticalMemoryPressure(length);
-  }
-
-  std::shared_ptr<TaskRunner> GetForegroundTaskRunner(
-      v8::Isolate* isolate) override {
-    return platform_->GetForegroundTaskRunner(isolate);
-  }
-
-  int NumberOfWorkerThreads() override { return 0; }
-
-  void CallOnWorkerThread(std::unique_ptr<Task> task) override {
-    // It's not defined when background tasks are being executed, so we can just
-    // execute them right away.
-    task->Run();
-  }
-
-  void CallDelayedOnWorkerThread(std::unique_ptr<Task> task,
-                                 double delay_in_seconds) override {
-    // Never run delayed tasks.
-  }
-
-  void CallOnForegroundThread(v8::Isolate* isolate, Task* task) override {
-    platform_->CallOnForegroundThread(isolate, task);
-  }
-
-  void CallDelayedOnForegroundThread(v8::Isolate* isolate, Task* task,
-                                     double delay_in_seconds) override {
-    platform_->CallDelayedOnForegroundThread(isolate, task, delay_in_seconds);
-  }
-
-  void CallIdleOnForegroundThread(Isolate* isolate, IdleTask* task) override {
-    UNREACHABLE();
-  }
-
-  bool IdleTasksEnabled(Isolate* isolate) override { return false; }
-
-  double MonotonicallyIncreasingTime() override {
-    return synthetic_time_in_sec_ += 0.00001;
-  }
-
-  double CurrentClockTimeMillis() override {
-    return MonotonicallyIncreasingTime() * base::Time::kMillisecondsPerSecond;
-  }
-
-  v8::TracingController* GetTracingController() override {
-    return platform_->GetTracingController();
-  }
-
-  Platform* platform() const { return platform_.get(); }
-
- private:
-  double synthetic_time_in_sec_ = 0.0;
-  std::unique_ptr<Platform> platform_;
-
-  DISALLOW_COPY_AND_ASSIGN(PredictablePlatform);
-};
-
+v8::Platform* g_default_platform;
 std::unique_ptr<v8::Platform> g_platform;
-
-v8::Platform* GetDefaultPlatform() {
-  return i::FLAG_verify_predictable
-             ? static_cast<PredictablePlatform*>(g_platform.get())->platform()
-             : g_platform.get();
-}
 
 static Local<Value> Throw(Isolate* isolate, const char* message) {
   return isolate->ThrowException(
@@ -508,7 +427,7 @@ class BackgroundCompileThread : public base::Thread {
 
 ScriptCompiler::CachedData* Shell::LookupCodeCache(Isolate* isolate,
                                                    Local<Value> source) {
-  base::LockGuard<base::Mutex> lock_guard(cached_code_mutex_.Pointer());
+  base::MutexGuard lock_guard(cached_code_mutex_.Pointer());
   CHECK(source->IsString());
   v8::String::Utf8Value key(isolate, source);
   DCHECK(*key);
@@ -526,7 +445,7 @@ ScriptCompiler::CachedData* Shell::LookupCodeCache(Isolate* isolate,
 
 void Shell::StoreInCodeCache(Isolate* isolate, Local<Value> source,
                              const ScriptCompiler::CachedData* cache_data) {
-  base::LockGuard<base::Mutex> lock_guard(cached_code_mutex_.Pointer());
+  base::MutexGuard lock_guard(cached_code_mutex_.Pointer());
   CHECK(source->IsString());
   if (cache_data == nullptr) return;
   v8::String::Utf8Value key(isolate, source);
@@ -1479,7 +1398,7 @@ void Shell::WorkerNew(const v8::FunctionCallbackInfo<v8::Value>& args) {
   }
 
   {
-    base::LockGuard<base::Mutex> lock_guard(workers_mutex_.Pointer());
+    base::MutexGuard lock_guard(workers_mutex_.Pointer());
     if (workers_.size() >= kMaxWorkers) {
       Throw(args.GetIsolate(), "Too many workers, I won't let you create more");
       return;
@@ -2012,7 +1931,7 @@ void Shell::Initialize(Isolate* isolate) {
 
 Local<Context> Shell::CreateEvaluationContext(Isolate* isolate) {
   // This needs to be a critical section since this is not thread-safe
-  base::LockGuard<base::Mutex> lock_guard(context_mutex_.Pointer());
+  base::MutexGuard lock_guard(context_mutex_.Pointer());
   // Initialize the global objects
   Local<ObjectTemplate> global_template = CreateGlobalTemplate(isolate);
   EscapableHandleScope handle_scope(isolate);
@@ -2642,14 +2561,14 @@ ExternalizedContents::~ExternalizedContents() {
 }
 
 void SerializationDataQueue::Enqueue(std::unique_ptr<SerializationData> data) {
-  base::LockGuard<base::Mutex> lock_guard(&mutex_);
+  base::MutexGuard lock_guard(&mutex_);
   data_.push_back(std::move(data));
 }
 
 bool SerializationDataQueue::Dequeue(
     std::unique_ptr<SerializationData>* out_data) {
   out_data->reset();
-  base::LockGuard<base::Mutex> lock_guard(&mutex_);
+  base::MutexGuard lock_guard(&mutex_);
   if (data_.empty()) return false;
   *out_data = std::move(data_[0]);
   data_.erase(data_.begin());
@@ -2658,13 +2577,13 @@ bool SerializationDataQueue::Dequeue(
 
 
 bool SerializationDataQueue::IsEmpty() {
-  base::LockGuard<base::Mutex> lock_guard(&mutex_);
+  base::MutexGuard lock_guard(&mutex_);
   return data_.empty();
 }
 
 
 void SerializationDataQueue::Clear() {
-  base::LockGuard<base::Mutex> lock_guard(&mutex_);
+  base::MutexGuard lock_guard(&mutex_);
   data_.clear();
 }
 
@@ -3063,7 +2982,7 @@ void Shell::CollectGarbage(Isolate* isolate) {
 }
 
 void Shell::SetWaitUntilDone(Isolate* isolate, bool value) {
-  base::LockGuard<base::Mutex> guard(isolate_status_lock_.Pointer());
+  base::MutexGuard guard(isolate_status_lock_.Pointer());
   if (isolate_status_.count(isolate) == 0) {
     isolate_status_.insert(std::make_pair(isolate, value));
   } else {
@@ -3075,17 +2994,17 @@ namespace {
 bool ProcessMessages(
     Isolate* isolate,
     const std::function<platform::MessageLoopBehavior()>& behavior) {
-  Platform* platform = GetDefaultPlatform();
   while (true) {
     i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
     i::SaveContext saved_context(i_isolate);
     i_isolate->set_context(nullptr);
     SealHandleScope shs(isolate);
-    while (v8::platform::PumpMessageLoop(platform, isolate, behavior())) {
+    while (v8::platform::PumpMessageLoop(g_default_platform, isolate,
+                                         behavior())) {
       isolate->RunMicrotasks();
     }
-    if (platform->IdleTasksEnabled(isolate)) {
-      v8::platform::RunIdleTasks(platform, isolate,
+    if (g_default_platform->IdleTasksEnabled(isolate)) {
+      v8::platform::RunIdleTasks(g_default_platform, isolate,
                                  50.0 / base::Time::kMillisecondsPerSecond);
     }
     HandleScope handle_scope(isolate);
@@ -3108,7 +3027,7 @@ bool ProcessMessages(
 
 void Shell::CompleteMessageLoop(Isolate* isolate) {
   auto get_waiting_behaviour = [isolate]() {
-    base::LockGuard<base::Mutex> guard(isolate_status_lock_.Pointer());
+    base::MutexGuard guard(isolate_status_lock_.Pointer());
     DCHECK_GT(isolate_status_.count(isolate), 0);
     i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
     i::wasm::WasmEngine* wasm_engine = i_isolate->wasm_engine();
@@ -3361,7 +3280,7 @@ std::unique_ptr<SerializationData> Shell::SerializeValue(
     data = serializer.Release();
   }
   // Append externalized contents even when WriteValue fails.
-  base::LockGuard<base::Mutex> lock_guard(workers_mutex_.Pointer());
+  base::MutexGuard lock_guard(workers_mutex_.Pointer());
   serializer.AppendExternalizedContentsTo(&externalized_contents_);
   return data;
 }
@@ -3381,7 +3300,7 @@ void Shell::CleanupWorkers() {
   // create a new Worker, it would deadlock.
   std::vector<Worker*> workers_copy;
   {
-    base::LockGuard<base::Mutex> lock_guard(workers_mutex_.Pointer());
+    base::MutexGuard lock_guard(workers_mutex_.Pointer());
     allow_new_workers_ = false;
     workers_copy.swap(workers_);
   }
@@ -3392,7 +3311,7 @@ void Shell::CleanupWorkers() {
   }
 
   // Now that all workers are terminated, we can re-enable Worker creation.
-  base::LockGuard<base::Mutex> lock_guard(workers_mutex_.Pointer());
+  base::MutexGuard lock_guard(workers_mutex_.Pointer());
   allow_new_workers_ = true;
   externalized_contents_.clear();
 }
@@ -3424,10 +3343,24 @@ int Shell::Main(int argc, char* argv[]) {
   g_platform = v8::platform::NewDefaultPlatform(
       options.thread_pool_size, v8::platform::IdleTaskSupport::kEnabled,
       in_process_stack_dumping, std::move(tracing));
+  g_default_platform = g_platform.get();
   if (i::FLAG_verify_predictable) {
-    g_platform.reset(new PredictablePlatform(std::move(g_platform)));
+    g_platform = MakePredictablePlatform(std::move(g_platform));
+  }
+  if (i::FLAG_stress_delay_tasks) {
+    int64_t random_seed = i::FLAG_fuzzer_random_seed;
+    if (!random_seed) random_seed = i::FLAG_random_seed;
+    // If random_seed is still 0 here, the {DelayedTasksPlatform} will choose a
+    // random seed.
+    g_platform = MakeDelayedTasksPlatform(std::move(g_platform), random_seed);
   }
 
+  if (i::FLAG_trace_turbo_cfg_file == nullptr) {
+    SetFlagsFromString("--trace-turbo-cfg-file=turbo.cfg");
+  }
+  if (i::FLAG_redirect_code_traces_to == nullptr) {
+    SetFlagsFromString("--redirect-code-traces-to=code.asm");
+  }
   v8::V8::InitializePlatform(g_platform.get());
   v8::V8::Initialize();
   if (options.natives_blob || options.snapshot_blob) {
@@ -3435,12 +3368,6 @@ int Shell::Main(int argc, char* argv[]) {
                                           options.snapshot_blob);
   } else {
     v8::V8::InitializeExternalStartupData(argv[0]);
-  }
-  if (i::FLAG_trace_turbo_cfg_file == nullptr) {
-    SetFlagsFromString("--trace-turbo-cfg-file=turbo.cfg");
-  }
-  if (i::FLAG_redirect_code_traces_to == nullptr) {
-    SetFlagsFromString("--redirect-code-traces-to=code.asm");
   }
   int result = 0;
   Isolate::CreateParams create_params;

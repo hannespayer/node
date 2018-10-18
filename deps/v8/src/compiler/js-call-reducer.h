@@ -38,12 +38,12 @@ class V8_EXPORT_PRIVATE JSCallReducer final : public AdvancedReducer {
   enum Flag { kNoFlags = 0u, kBailoutOnUninitialized = 1u << 0 };
   typedef base::Flags<Flag> Flags;
 
-  JSCallReducer(Editor* editor, JSGraph* jsgraph, JSHeapBroker* js_heap_broker,
+  JSCallReducer(Editor* editor, JSGraph* jsgraph, JSHeapBroker* broker,
                 Flags flags, Handle<Context> native_context,
                 CompilationDependencies* dependencies)
       : AdvancedReducer(editor),
         jsgraph_(jsgraph),
-        js_heap_broker_(js_heap_broker),
+        broker_(broker),
         flags_(flags),
         native_context_(native_context),
         dependencies_(dependencies) {}
@@ -136,7 +136,6 @@ class V8_EXPORT_PRIVATE JSCallReducer final : public AdvancedReducer {
                                         Handle<SharedFunctionInfo> shared);
 
   Reduction ReduceAsyncFunctionPromiseCreate(Node* node);
-  Reduction ReduceAsyncFunctionPromiseRelease(Node* node);
   Reduction ReducePromiseConstructor(Node* node);
   Reduction ReducePromiseInternalConstructor(Node* node);
   Reduction ReducePromiseInternalReject(Node* node);
@@ -230,11 +229,12 @@ class V8_EXPORT_PRIVATE JSCallReducer final : public AdvancedReducer {
   Node* CreateArtificialFrameState(Node* node, Node* outer_frame_state,
                                    int parameter_count, BailoutId bailout_id,
                                    FrameStateType frame_state_type,
-                                   Handle<SharedFunctionInfo> shared);
+                                   Handle<SharedFunctionInfo> shared,
+                                   Node* context = nullptr);
 
   Graph* graph() const;
   JSGraph* jsgraph() const { return jsgraph_; }
-  JSHeapBroker* js_heap_broker() const { return js_heap_broker_; }
+  JSHeapBroker* broker() const { return broker_; }
   Isolate* isolate() const;
   Factory* factory() const;
   Handle<Context> native_context() const { return native_context_; }
@@ -246,7 +246,7 @@ class V8_EXPORT_PRIVATE JSCallReducer final : public AdvancedReducer {
   CompilationDependencies* dependencies() const { return dependencies_; }
 
   JSGraph* const jsgraph_;
-  JSHeapBroker* const js_heap_broker_;
+  JSHeapBroker* const broker_;
   Flags const flags_;
   Handle<Context> const native_context_;
   CompilationDependencies* const dependencies_;

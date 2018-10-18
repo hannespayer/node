@@ -7,12 +7,13 @@
 
 #include "src/roots.h"
 
+#include "src/handles.h"
 #include "src/heap/heap-inl.h"
 
 namespace v8 {
 namespace internal {
 
-V8_INLINE bool operator<(RootIndex lhs, RootIndex rhs) {
+V8_INLINE constexpr bool operator<(RootIndex lhs, RootIndex rhs) {
   typedef typename std::underlying_type<RootIndex>::type type;
   return static_cast<type>(lhs) < static_cast<type>(rhs);
 }
@@ -23,10 +24,17 @@ V8_INLINE RootIndex operator++(RootIndex& index) {
   return index;
 }
 
-ReadOnlyRoots::ReadOnlyRoots(Heap* heap) : roots_table_(heap->roots_table()) {}
+template <typename T>
+bool RootsTable::IsRootHandle(Handle<T> handle, RootIndex* index) const {
+  Object** handle_location = bit_cast<Object**>(handle.address());
+  return IsRootHandleLocation(handle_location, index);
+}
+
+ReadOnlyRoots::ReadOnlyRoots(Heap* heap)
+    : roots_table_(heap->isolate()->roots_table()) {}
 
 ReadOnlyRoots::ReadOnlyRoots(Isolate* isolate)
-    : roots_table_(isolate->heap()->roots_table()) {}
+    : roots_table_(isolate->roots_table()) {}
 
 #define ROOT_ACCESSOR(type, name, CamelName)                       \
   type* ReadOnlyRoots::name() {                                    \

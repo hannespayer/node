@@ -31,6 +31,7 @@ namespace wasm {
 class NativeModule;
 class WasmCodeManager;
 class WasmMemoryTracker;
+class WasmImportWrapperCache;
 struct WasmModule;
 
 // Sorted, disjoint and non-overlapping memory regions. A region is of the
@@ -230,14 +231,10 @@ class V8_EXPORT_PRIVATE NativeModule final {
       OwnedVector<const byte> reloc_info,
       OwnedVector<const byte> source_position_table, WasmCode::Tier tier);
 
-  // Add an import wrapper for wasm-to-JS transitions. This method copies over
-  // JS-allocated code, because we compile wrappers using a different pipeline.
-  WasmCode* AddImportWrapper(Handle<Code> code, uint32_t index);
-
-  // Add an interpreter entry. For the same reason as AddImportWrapper, we
-  // currently compile these using a different pipeline and we can't get a
-  // CodeDesc here. When adding interpreter wrappers, we do not insert them in
-  // the code_table, however, we let them self-identify as the {index} function.
+  // Add an interpreter entry. We currently compile these using a different
+  // pipeline and we can't get a CodeDesc here. When adding interpreter
+  // wrappers, we do not insert them in the code_table, however, we let them
+  // self-identify as the {index} function.
   WasmCode* AddInterpreterEntry(Handle<Code> code, uint32_t index);
 
   // Adds anonymous code for testing purposes.
@@ -335,6 +332,10 @@ class V8_EXPORT_PRIVATE NativeModule final {
 
   WasmCode* Lookup(Address) const;
 
+  WasmImportWrapperCache* import_wrapper_cache() const {
+    return import_wrapper_cache_.get();
+  }
+
   ~NativeModule();
 
   const WasmFeatures& enabled_features() const { return enabled_features_; }
@@ -343,6 +344,7 @@ class V8_EXPORT_PRIVATE NativeModule final {
   friend class WasmCode;
   friend class WasmCodeManager;
   friend class NativeModuleModificationScope;
+  friend class WasmImportWrapperCache;
 
   NativeModule(Isolate* isolate, const WasmFeatures& enabled_features,
                bool can_request_more, VirtualMemory code_space,
@@ -376,6 +378,30 @@ class V8_EXPORT_PRIVATE NativeModule final {
     return {code_table_.get(), module_->num_declared_functions};
   }
 
+  // Hold the {mutex_} when calling this method.
+  bool has_interpreter_redirection(uint32_t func_index) {
+    DCHECK_LT(func_index, num_functions());
+    DCHECK_LE(module_->num_imported_functions, func_index);
+    if (!interpreter_redirections_) return false;
+    uint32_t bitset_idx = func_index - module_->num_imported_functions;
+    uint8_t byte = interpreter_redirections_[bitset_idx / kBitsPerByte];
+    return byte & (1 << (bitset_idx % kBitsPerByte));
+  }
+
+  // Hold the {mutex_} when calling this method.
+  void SetInterpreterRedirection(uint32_t func_index) {
+    DCHECK_LT(func_index, num_functions());
+    DCHECK_LE(module_->num_imported_functions, func_index);
+    if (!interpreter_redirections_) {
+      interpreter_redirections_.reset(
+          new uint8_t[RoundUp<kBitsPerByte>(module_->num_declared_functions) /
+                      kBitsPerByte]);
+    }
+    uint32_t bitset_idx = func_index - module_->num_imported_functions;
+    uint8_t& byte = interpreter_redirections_[bitset_idx / kBitsPerByte];
+    byte |= 1 << (bitset_idx % kBitsPerByte);
+  }
+
   // Features enabled for this module. We keep a copy of the features that
   // were enabled at the time of the creation of this native module,
   // to be consistent across asynchronous compilations later.
@@ -397,6 +423,9 @@ class V8_EXPORT_PRIVATE NativeModule final {
   // hence needs to be destructed first when this native module dies.
   std::unique_ptr<CompilationState, CompilationStateDeleter> compilation_state_;
 
+  // A cache of the import wrappers, keyed on the kind and signature.
+  std::unique_ptr<WasmImportWrapperCache> import_wrapper_cache_;
+
   // This mutex protects concurrent calls to {AddCode} and friends.
   mutable base::Mutex allocation_mutex_;
 
@@ -408,6 +437,10 @@ class V8_EXPORT_PRIVATE NativeModule final {
   std::vector<std::unique_ptr<WasmCode>> owned_code_;
 
   std::unique_ptr<WasmCode* []> code_table_;
+
+  // Null if no redirections exist, otherwise a bitset over all functions in
+  // this module marking those functions that have been redirected.
+  std::unique_ptr<uint8_t[]> interpreter_redirections_;
 
   DisjointAllocationPool free_code_space_;
   DisjointAllocationPool allocated_code_space_;

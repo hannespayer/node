@@ -935,9 +935,7 @@ class RuntimeCallTimer final {
   V(ParseProgram)                              \
   V(PreParseArrowFunctionLiteral)              \
   V(PreParseBackgroundArrowFunctionLiteral)    \
-  V(PreParseBackgroundNoVariableResolution)    \
   V(PreParseBackgroundWithVariableResolution)  \
-  V(PreParseNoVariableResolution)              \
   V(PreParseWithVariableResolution)            \
   V(PropertyCallback)                          \
   V(PrototypeMap_TransitionToAccessorProperty) \
@@ -1182,6 +1180,7 @@ class RuntimeCallTimerScope {
   HR(gc_finalize_sweep, V8.GCFinalizeMC.Sweep, 0, 10000, 101)                  \
   HR(gc_scavenger_scavenge_main, V8.GCScavenger.ScavengeMain, 0, 10000, 101)   \
   HR(gc_scavenger_scavenge_roots, V8.GCScavenger.ScavengeRoots, 0, 10000, 101) \
+  HR(gc_mark_compactor, V8.GCMarkCompactor, 0, 10000, 101)                     \
   HR(scavenge_reason, V8.GCScavengeReason, 0, 21, 22)                          \
   HR(young_generation_handling, V8.GCYoungGenerationHandling, 0, 2, 3)         \
   /* Asm/Wasm. */                                                              \
@@ -1359,7 +1358,6 @@ class RuntimeCallTimerScope {
   SC(string_table_capacity, V8.StringTableCapacity)                 \
   SC(number_of_symbols, V8.NumberOfSymbols)                         \
   SC(inlined_copied_elements, V8.InlinedCopiedElements)             \
-  SC(arguments_adaptors, V8.ArgumentsAdaptors)                      \
   SC(compilation_cache_hits, V8.CompilationCacheHits)               \
   SC(compilation_cache_misses, V8.CompilationCacheMisses)           \
   /* Amount of evaled source code. */                               \

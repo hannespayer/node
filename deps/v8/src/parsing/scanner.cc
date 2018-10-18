@@ -13,16 +13,15 @@
 #include "src/ast/ast-value-factory.h"
 #include "src/conversions-inl.h"
 #include "src/objects/bigint.h"
-#include "src/parsing/duplicate-finder.h"  // For Scanner::FindSymbol
 #include "src/parsing/scanner-inl.h"
+#include "src/zone/zone.h"
 
 namespace v8 {
 namespace internal {
 
 class Scanner::ErrorState {
  public:
-  ErrorState(MessageTemplate::Template* message_stack,
-             Scanner::Location* location_stack)
+  ErrorState(MessageTemplate* message_stack, Scanner::Location* location_stack)
       : message_stack_(message_stack),
         old_message_(*message_stack),
         location_stack_(location_stack),
@@ -49,8 +48,8 @@ class Scanner::ErrorState {
   }
 
  private:
-  MessageTemplate::Template* const message_stack_;
-  MessageTemplate::Template const old_message_;
+  MessageTemplate* const message_stack_;
+  MessageTemplate const old_message_;
   Scanner::Location* const location_stack_;
   Scanner::Location const old_location_;
 };
@@ -1186,14 +1185,6 @@ const char* Scanner::CurrentLiteralAsCString(Zone* zone) const {
   memcpy(buffer, vector.start(), length);
   buffer[length] = '\0';
   return buffer;
-}
-
-bool Scanner::IsDuplicateSymbol(DuplicateFinder* duplicate_finder,
-                                AstValueFactory* ast_value_factory) const {
-  DCHECK_NOT_NULL(duplicate_finder);
-  DCHECK_NOT_NULL(ast_value_factory);
-  const AstRawString* string = CurrentSymbol(ast_value_factory);
-  return !duplicate_finder->known_symbols_.insert(string).second;
 }
 
 void Scanner::SeekNext(size_t position) {

@@ -94,7 +94,7 @@ class JSBinopReduction final {
     if (BothInputsAre(Type::String()) ||
         BinaryOperationHintOf(node_->op()) == BinaryOperationHint::kString) {
       HeapObjectBinopMatcher m(node_);
-      JSHeapBroker* broker = lowering_->js_heap_broker();
+      JSHeapBroker* broker = lowering_->broker();
       if (m.right().HasValue() && m.right().Ref(broker).IsString()) {
         StringRef right_string = m.right().Ref(broker).AsString();
         if (right_string.length() >= ConsString::kMinLength) return true;
@@ -414,12 +414,12 @@ class JSBinopReduction final {
 // - relax effects from generic but not-side-effecting operations
 
 JSTypedLowering::JSTypedLowering(Editor* editor, JSGraph* jsgraph,
-                                 JSHeapBroker* js_heap_broker, Zone* zone)
+                                 JSHeapBroker* broker, Zone* zone)
     : AdvancedReducer(editor),
       jsgraph_(jsgraph),
-      js_heap_broker_(js_heap_broker),
-      empty_string_type_(Type::HeapConstant(
-          js_heap_broker, factory()->empty_string(), graph()->zone())),
+      broker_(broker),
+      empty_string_type_(Type::HeapConstant(broker, factory()->empty_string(),
+                                            graph()->zone())),
       pointer_comparable_type_(
           Type::Union(Type::Oddball(),
                       Type::Union(Type::SymbolOrReceiver(), empty_string_type_,
@@ -569,7 +569,9 @@ Reduction JSTypedLowering::ReduceJSAdd(Node* node) {
     Node* length =
         graph()->NewNode(simplified()->NumberAdd(), left_length, right_length);
 
-    if (isolate()->IsStringLengthOverflowIntact()) {
+    CellRef string_length_protector(broker(),
+                                    factory()->string_length_protector());
+    if (string_length_protector.value().AsSmi() == Isolate::kProtectorValid) {
       // We can just deoptimize if the {length} is out-of-bounds. Besides
       // generating a shorter code sequence than the version below, this
       // has the additional benefit of not holding on to the lazy {frame_state}
@@ -933,8 +935,8 @@ Reduction JSTypedLowering::ReduceJSToNumberInput(Node* input) {
 
   if (input_type.Is(Type::String())) {
     HeapObjectMatcher m(input);
-    if (m.HasValue() && m.Ref(js_heap_broker()).IsString()) {
-      StringRef input_value = m.Ref(js_heap_broker()).AsString();
+    if (m.HasValue() && m.Ref(broker()).IsString()) {
+      StringRef input_value = m.Ref(broker()).AsString();
       double number;
       ASSIGN_RETURN_NO_CHANGE_IF_DATA_MISSING(number, input_value.ToNumber());
       return Replace(jsgraph()->Constant(number));
@@ -1107,8 +1109,8 @@ Reduction JSTypedLowering::ReduceJSLoadNamed(Node* node) {
   DCHECK_EQ(IrOpcode::kJSLoadNamed, node->opcode());
   Node* receiver = NodeProperties::GetValueInput(node, 0);
   Type receiver_type = NodeProperties::GetType(receiver);
-  NameRef name(js_heap_broker(), NamedAccessOf(node->op()).name());
-  NameRef length_str(js_heap_broker(), factory()->length_string());
+  NameRef name(broker(), NamedAccessOf(node->op()).name());
+  NameRef length_str(broker(), factory()->length_string());
   // Optimize "length" property of strings.
   if (name.equals(length_str) && receiver_type.Is(Type::String())) {
     Node* value = graph()->NewNode(simplified()->StringLength(), receiver);
@@ -1541,7 +1543,7 @@ Reduction JSTypedLowering::ReduceJSConstruct(Node* node) {
     // Patch {node} to an indirect call via the {function}s construct stub.
     bool use_builtin_construct_stub = shared.construct_as_builtin();
 
-    CodeRef code(js_heap_broker(),
+    CodeRef code(broker(),
                  use_builtin_construct_stub
                      ? BUILTIN_CODE(isolate(), JSBuiltinsConstructStub)
                      : BUILTIN_CODE(isolate(), JSConstructStubGeneric));
@@ -1625,21 +1627,26 @@ Reduction JSTypedLowering::ReduceJSCall(Node* node) {
     // See ES6 section 9.2.1 [[Call]] ( thisArgument, argumentsList ).
     if (IsClassConstructor(shared.kind())) return NoChange();
 
-    // Load the context from the {target}.
-    Node* context = effect = graph()->NewNode(
-        simplified()->LoadField(AccessBuilder::ForJSFunctionContext()), target,
-        effect, control);
-    NodeProperties::ReplaceContextInput(node, context);
-
-    // Check if we need to convert the {receiver}.
+    // Check if we need to convert the {receiver}, but bailout if it would
+    // require data from a foreign native context.
     if (is_sloppy(shared.language_mode()) && !shared.native() &&
         !receiver_type.Is(Type::Receiver())) {
-      Node* global_proxy = jsgraph()->Constant(function.global_proxy());
+      if (!function.native_context().equals(broker()->native_context())) {
+        return NoChange();
+      }
+      Node* global_proxy =
+          jsgraph()->Constant(function.native_context().global_proxy_object());
       receiver = effect =
           graph()->NewNode(simplified()->ConvertReceiver(convert_mode),
                            receiver, global_proxy, effect, control);
       NodeProperties::ReplaceValueInput(node, receiver, 1);
     }
+
+    // Load the context from the {target}.
+    Node* context = effect = graph()->NewNode(
+        simplified()->LoadField(AccessBuilder::ForJSFunctionContext()), target,
+        effect, control);
+    NodeProperties::ReplaceContextInput(node, context);
 
     // Update the effect dependency for the {node}.
     NodeProperties::ReplaceEffectInput(node, effect);
@@ -2217,6 +2224,22 @@ Reduction JSTypedLowering::ReduceJSParseInt(Node* node) {
   return NoChange();
 }
 
+Reduction JSTypedLowering::ReduceJSResolvePromise(Node* node) {
+  DCHECK_EQ(IrOpcode::kJSResolvePromise, node->opcode());
+  Node* resolution = NodeProperties::GetValueInput(node, 1);
+  Type resolution_type = NodeProperties::GetType(resolution);
+  // We can strength-reduce JSResolvePromise to JSFulfillPromise
+  // if the {resolution} is known to be a primitive, as in that
+  // case we don't perform the implicit chaining (via "then").
+  if (resolution_type.Is(Type::Primitive())) {
+    // JSResolvePromise(p,v:primitive) -> JSFulfillPromise(p,v)
+    node->RemoveInput(3);  // frame state
+    NodeProperties::ChangeOp(node, javascript()->FulfillPromise());
+    return Changed(node);
+  }
+  return NoChange();
+}
+
 Reduction JSTypedLowering::Reduce(Node* node) {
   DisallowHeapAccess no_heap_access;
 
@@ -2325,6 +2348,8 @@ Reduction JSTypedLowering::Reduce(Node* node) {
       return ReduceObjectIsArray(node);
     case IrOpcode::kJSParseInt:
       return ReduceJSParseInt(node);
+    case IrOpcode::kJSResolvePromise:
+      return ReduceJSResolvePromise(node);
     default:
       break;
   }

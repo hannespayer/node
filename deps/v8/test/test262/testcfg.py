@@ -52,14 +52,14 @@ FEATURE_FLAGS = {
   'Intl.ListFormat': '--harmony-intl-list-format',
   'Intl.Locale': '--harmony-locale',
   'Intl.RelativeTimeFormat': '--harmony-intl-relative-time-format',
+  'Intl.Segmenter': '--harmony-intl-segmenter',
   'Symbol.prototype.description': '--harmony-symbol-description',
   'globalThis': '--harmony-global',
   'well-formed-json-stringify': '--harmony-json-stringify',
+  'export-star-as-namespace-from-module': '--harmony-namespace-exports',
 }
 
-SKIPPED_FEATURES = set(['Intl.Segmenter',
-                        'Object.fromEntries',
-                        'export-star-as-namespace-from-module',
+SKIPPED_FEATURES = set(['Object.fromEntries',
                         'class-fields-private',
                         'class-static-fields-private',
                         'class-methods-private',

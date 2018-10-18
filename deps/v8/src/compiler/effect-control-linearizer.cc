@@ -1451,7 +1451,7 @@ void EffectControlLinearizer::LowerCheckMaps(Node* node, Node* frame_state) {
   size_t const map_count = maps.size();
 
   if (p.flags() & CheckMapsFlag::kTryMigrateInstance) {
-    auto done = __ MakeDeferredLabel();
+    auto done = __ MakeLabel();
     auto migrate = __ MakeDeferredLabel();
 
     // Load the current map of the {value}.
@@ -1462,10 +1462,11 @@ void EffectControlLinearizer::LowerCheckMaps(Node* node, Node* frame_state) {
       Node* map = __ HeapConstant(maps[i]);
       Node* check = __ WordEqual(value_map, map);
       if (i == map_count - 1) {
-        __ GotoIfNot(check, &migrate);
-        __ Goto(&done);
+        __ Branch(check, &done, &migrate, IsSafetyCheck::kCriticalSafetyCheck);
       } else {
-        __ GotoIf(check, &done);
+        auto next_map = __ MakeLabel();
+        __ Branch(check, &done, &next_map, IsSafetyCheck::kCriticalSafetyCheck);
+        __ Bind(&next_map);
       }
     }
 
@@ -1480,7 +1481,8 @@ void EffectControlLinearizer::LowerCheckMaps(Node* node, Node* frame_state) {
                        __ Int32Constant(Map::IsDeprecatedBit::kMask)),
           __ Int32Constant(0));
       __ DeoptimizeIf(DeoptimizeReason::kWrongMap, p.feedback(),
-                      if_not_deprecated, frame_state);
+                      if_not_deprecated, frame_state,
+                      IsSafetyCheck::kCriticalSafetyCheck);
 
       Operator::Properties properties = Operator::kNoDeopt | Operator::kNoThrow;
       Runtime::FunctionId id = Runtime::kTryMigrateInstance;
@@ -1491,7 +1493,7 @@ void EffectControlLinearizer::LowerCheckMaps(Node* node, Node* frame_state) {
                              __ Int32Constant(1), __ NoContextConstant());
       Node* check = ObjectIsSmi(result);
       __ DeoptimizeIf(DeoptimizeReason::kInstanceMigrationFailed, p.feedback(),
-                      check, frame_state);
+                      check, frame_state, IsSafetyCheck::kCriticalSafetyCheck);
     }
 
     // Reload the current map of the {value}.
@@ -1503,9 +1505,11 @@ void EffectControlLinearizer::LowerCheckMaps(Node* node, Node* frame_state) {
       Node* check = __ WordEqual(value_map, map);
       if (i == map_count - 1) {
         __ DeoptimizeIfNot(DeoptimizeReason::kWrongMap, p.feedback(), check,
-                           frame_state);
+                           frame_state, IsSafetyCheck::kCriticalSafetyCheck);
       } else {
-        __ GotoIf(check, &done);
+        auto next_map = __ MakeLabel();
+        __ Branch(check, &done, &next_map, IsSafetyCheck::kCriticalSafetyCheck);
+        __ Bind(&next_map);
       }
     }
 
@@ -1522,9 +1526,11 @@ void EffectControlLinearizer::LowerCheckMaps(Node* node, Node* frame_state) {
       Node* check = __ WordEqual(value_map, map);
       if (i == map_count - 1) {
         __ DeoptimizeIfNot(DeoptimizeReason::kWrongMap, p.feedback(), check,
-                           frame_state);
+                           frame_state, IsSafetyCheck::kCriticalSafetyCheck);
       } else {
-        __ GotoIf(check, &done);
+        auto next_map = __ MakeLabel();
+        __ Branch(check, &done, &next_map, IsSafetyCheck::kCriticalSafetyCheck);
+        __ Bind(&next_map);
       }
     }
     __ Goto(&done);
@@ -1545,7 +1551,14 @@ Node* EffectControlLinearizer::LowerCompareMaps(Node* node) {
   for (size_t i = 0; i < map_count; ++i) {
     Node* map = __ HeapConstant(maps[i]);
     Node* check = __ WordEqual(value_map, map);
-    __ GotoIf(check, &done, __ Int32Constant(1));
+    auto next_map = __ MakeLabel();
+    auto passed = __ MakeLabel();
+    __ Branch(check, &passed, &next_map, IsSafetyCheck::kCriticalSafetyCheck);
+
+    __ Bind(&passed);
+    __ Goto(&done, __ Int32Constant(1));
+
+    __ Bind(&next_map);
   }
   __ Goto(&done, __ Int32Constant(0));
 
@@ -1862,8 +1875,11 @@ Node* EffectControlLinearizer::LowerCheckedInt32Mod(Node* node,
 
   __ Bind(&if_lhs_negative);
   {
-    // The {lhs} is a negative integer.
-    Node* res = BuildUint32Mod(__ Int32Sub(zero, lhs), rhs);
+    // The {lhs} is a negative integer. This is very unlikely and
+    // we intentionally don't use the BuildUint32Mod() here, which
+    // would try to figure out whether {rhs} is a power of two,
+    // since this is intended to be a slow-path.
+    Node* res = __ Uint32Mod(__ Int32Sub(zero, lhs), rhs);
 
     // Check if we would have to return -0.
     __ DeoptimizeIf(DeoptimizeReason::kMinusZero, VectorSlotPair(),
@@ -3526,10 +3542,25 @@ Node* EffectControlLinearizer::LowerCheckFloat64Hole(Node* node,
   CheckFloat64HoleParameters const& params =
       CheckFloat64HoleParametersOf(node->op());
   Node* value = node->InputAt(0);
-  Node* check = __ Word32Equal(__ Float64ExtractHighWord32(value),
-                               __ Int32Constant(kHoleNanUpper32));
-  __ DeoptimizeIf(DeoptimizeReason::kHole, params.feedback(), check,
-                  frame_state);
+
+  auto if_nan = __ MakeDeferredLabel();
+  auto done = __ MakeLabel();
+
+  // First check whether {value} is a NaN at all...
+  __ Branch(__ Float64Equal(value, value), &done, &if_nan);
+
+  __ Bind(&if_nan);
+  {
+    // ...and only if {value} is a NaN, perform the expensive bit
+    // check. See http://crbug.com/v8/8264 for details.
+    Node* check = __ Word32Equal(__ Float64ExtractHighWord32(value),
+                                 __ Int32Constant(kHoleNanUpper32));
+    __ DeoptimizeIf(DeoptimizeReason::kHole, params.feedback(), check,
+                    frame_state);
+    __ Goto(&done);
+  }
+
+  __ Bind(&done);
   return value;
 }
 

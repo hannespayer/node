@@ -427,18 +427,15 @@ namespace internal {
   CPP(ArrayBufferPrototypeSlice)                                               \
                                                                                \
   /* AsyncFunction */                                                          \
-  TFJ(AsyncFunctionAwaitCaught, 3, kReceiver, kGenerator, kAwaited,            \
-      kOuterPromise)                                                           \
-  TFJ(AsyncFunctionAwaitCaughtOptimized, 3, kReceiver, kGenerator, kAwaited,   \
-      kOuterPromise)                                                           \
-  TFJ(AsyncFunctionAwaitUncaught, 3, kReceiver, kGenerator, kAwaited,          \
-      kOuterPromise)                                                           \
-  TFJ(AsyncFunctionAwaitUncaughtOptimized, 3, kReceiver, kGenerator, kAwaited, \
-      kOuterPromise)                                                           \
+  TFS(AsyncFunctionEnter, kClosure, kReceiver)                                 \
+  TFS(AsyncFunctionReject, kAsyncFunctionObject, kReason, kCanSuspend)         \
+  TFS(AsyncFunctionResolve, kAsyncFunctionObject, kValue, kCanSuspend)         \
+  TFC(AsyncFunctionLazyDeoptContinuation, AsyncFunctionStackParameter, 1)      \
+  TFS(AsyncFunctionAwaitCaught, kAsyncFunctionObject, kValue)                  \
+  TFS(AsyncFunctionAwaitUncaught, kAsyncFunctionObject, kValue)                \
   TFJ(AsyncFunctionAwaitRejectClosure, 1, kReceiver, kSentError)               \
   TFJ(AsyncFunctionAwaitResolveClosure, 1, kReceiver, kSentValue)              \
   TFJ(AsyncFunctionPromiseCreate, 0, kReceiver)                                \
-  TFJ(AsyncFunctionPromiseRelease, 2, kReceiver, kPromise, kCanSuspend)        \
                                                                                \
   /* BigInt */                                                                 \
   CPP(BigIntConstructor)                                                       \
@@ -468,6 +465,7 @@ namespace internal {
   CPP(CallSitePrototypeGetScriptNameOrSourceURL)                               \
   CPP(CallSitePrototypeGetThis)                                                \
   CPP(CallSitePrototypeGetTypeName)                                            \
+  CPP(CallSitePrototypeIsAsync)                                                \
   CPP(CallSitePrototypeIsConstructor)                                          \
   CPP(CallSitePrototypeIsEval)                                                 \
   CPP(CallSitePrototypeIsNative)                                               \
@@ -680,6 +678,7 @@ namespace internal {
   TFJ(MapPrototypeValues, 0, kReceiver)                                        \
   /* ES #sec-%mapiteratorprototype%.next */                                    \
   TFJ(MapIteratorPrototypeNext, 0, kReceiver)                                  \
+  TFS(MapIteratorToList, kSource)                                              \
                                                                                \
   /* Math */                                                                   \
   /* ES6 #sec-math.abs */                                                      \
@@ -842,6 +841,7 @@ namespace internal {
   /* ES #sec-object.prototype.tolocalestring */                                \
   TFJ(ObjectPrototypeToLocaleString, 0, kReceiver)                             \
   CPP(ObjectSeal)                                                              \
+  TFS(ObjectToString, kReceiver)                                               \
   TFJ(ObjectValues, 1, kReceiver, kObject)                                     \
                                                                                \
   /* instanceof */                                                             \
@@ -1013,6 +1013,7 @@ namespace internal {
   TFJ(SetPrototypeValues, 0, kReceiver)                                        \
   /* ES #sec-%setiteratorprototype%.next */                                    \
   TFJ(SetIteratorPrototypeNext, 0, kReceiver)                                  \
+  TFS(SetOrSetIteratorToList, kSource)                                         \
                                                                                \
   /* SharedArrayBuffer */                                                      \
   CPP(SharedArrayBufferPrototypeGetByteLength)                                 \
@@ -1282,8 +1283,8 @@ namespace internal {
                                                                                \
   /* Await (proposal-async-iteration/#await), with resume behaviour */         \
   /* specific to Async Generators. Internal / Not exposed to JS code. */       \
-  TFJ(AsyncGeneratorAwaitCaught, 2, kReceiver, kGenerator, kAwaited)           \
-  TFJ(AsyncGeneratorAwaitUncaught, 2, kReceiver, kGenerator, kAwaited)         \
+  TFS(AsyncGeneratorAwaitCaught, kAsyncGeneratorObject, kValue)                \
+  TFS(AsyncGeneratorAwaitUncaught, kAsyncGeneratorObject, kValue)              \
   TFJ(AsyncGeneratorAwaitResolveClosure, 1, kReceiver, kValue)                 \
   TFJ(AsyncGeneratorAwaitRejectClosure, 1, kReceiver, kValue)                  \
   TFJ(AsyncGeneratorYieldResolveClosure, 1, kReceiver, kValue)                 \
@@ -1297,13 +1298,10 @@ namespace internal {
   /* See tc39.github.io/proposal-async-iteration/ */                           \
   /* #sec-%asyncfromsynciteratorprototype%-object) */                          \
   TFJ(AsyncFromSyncIteratorPrototypeNext, 1, kReceiver, kValue)                \
-  TFJ(AsyncFromSyncIteratorPrototypeNextOptimized, 1, kReceiver, kValue)       \
   /* #sec-%asyncfromsynciteratorprototype%.throw */                            \
   TFJ(AsyncFromSyncIteratorPrototypeThrow, 1, kReceiver, kReason)              \
-  TFJ(AsyncFromSyncIteratorPrototypeThrowOptimized, 1, kReceiver, kReason)     \
   /* #sec-%asyncfromsynciteratorprototype%.return */                           \
   TFJ(AsyncFromSyncIteratorPrototypeReturn, 1, kReceiver, kValue)              \
-  TFJ(AsyncFromSyncIteratorPrototypeReturnOptimized, 1, kReceiver, kValue)     \
   /* #sec-async-iterator-value-unwrap-functions */                             \
   TFJ(AsyncIteratorValueUnwrap, 1, kReceiver, kValue)                          \
                                                                                \
@@ -1336,7 +1334,13 @@ namespace internal {
                                                                                \
   /* Trace */                                                                  \
   CPP(IsTraceCategoryEnabled)                                                  \
-  CPP(Trace)
+  CPP(Trace)                                                                   \
+                                                                               \
+  /* Weak refs */                                                              \
+  CPP(WeakCellHoldingsGetter)                                                  \
+  CPP(WeakFactoryCleanupIteratorNext)                                          \
+  CPP(WeakFactoryConstructor)                                                  \
+  CPP(WeakFactoryMakeCell)
 
 #ifdef V8_INTL_SUPPORT
 #define BUILTIN_LIST_INTL(CPP, TFJ, TFS)                               \
@@ -1425,6 +1429,24 @@ namespace internal {
   CPP(RelativeTimeFormatPrototypeResolvedOptions)                      \
   /* ecma402 #sec-intl.RelativeTimeFormat.supportedlocalesof */        \
   CPP(RelativeTimeFormatSupportedLocalesOf)                            \
+  /* ecma402 #sec-Intl.Segmenter */                                    \
+  CPP(SegmenterConstructor)                                            \
+  /* ecma402 #sec-Intl.Segmenter.prototype.resolvedOptions */          \
+  CPP(SegmenterPrototypeResolvedOptions)                               \
+  /* ecma402 #sec-Intl.Segmenter.prototype.segment  */                 \
+  CPP(SegmenterPrototypeSegment)                                       \
+  /* ecma402  #sec-Intl.Segmenter.supportedLocalesOf */                \
+  CPP(SegmenterSupportedLocalesOf)                                     \
+  /* ecma402 #sec-segment-iterator-prototype-breakType */              \
+  CPP(SegmentIteratorPrototypeBreakType)                               \
+  /* ecma402 #sec-segment-iterator-prototype-following */              \
+  CPP(SegmentIteratorPrototypeFollowing)                               \
+  /* ecma402 #sec-segment-iterator-prototype-preceding */              \
+  CPP(SegmentIteratorPrototypePreceding)                               \
+  /* ecma402 #sec-segment-iterator-prototype-position */               \
+  CPP(SegmentIteratorPrototypePosition)                                \
+  /* ecma402 #sec-segment-iterator-prototype-next */                   \
+  CPP(SegmentIteratorPrototypeNext)                                    \
   /* ES #sec-string.prototype.normalize */                             \
   CPP(StringPrototypeNormalizeIntl)                                    \
   /* ecma402 #sup-string.prototype.tolocalelowercase */                \
@@ -1474,14 +1496,9 @@ namespace internal {
 #define BUILTIN_PROMISE_REJECTION_PREDICTION_LIST(V) \
   V(AsyncFromSyncIteratorPrototypeNext)              \
   V(AsyncFromSyncIteratorPrototypeReturn)            \
-  V(AsyncFromSyncIteratorPrototypeNextOptimized)     \
-  V(AsyncFromSyncIteratorPrototypeThrowOptimized)    \
-  V(AsyncFromSyncIteratorPrototypeReturnOptimized)   \
   V(AsyncFromSyncIteratorPrototypeThrow)             \
   V(AsyncFunctionAwaitCaught)                        \
-  V(AsyncFunctionAwaitCaughtOptimized)               \
   V(AsyncFunctionAwaitUncaught)                      \
-  V(AsyncFunctionAwaitUncaughtOptimized)             \
   V(AsyncGeneratorResolve)                           \
   V(AsyncGeneratorAwaitCaught)                       \
   V(AsyncGeneratorAwaitUncaught)                     \

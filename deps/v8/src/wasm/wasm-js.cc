@@ -22,6 +22,7 @@
 #include "src/wasm/wasm-limits.h"
 #include "src/wasm/wasm-memory.h"
 #include "src/wasm/wasm-objects-inl.h"
+#include "src/wasm/wasm-serialization.h"
 
 using v8::internal::wasm::ErrorThrower;
 
@@ -58,6 +59,24 @@ class WasmStreaming::WasmStreamingImpl {
         Utils::OpenHandle(*exception.ToLocalChecked()));
   }
 
+  void SetModuleCompiledCallback(ModuleCompiledCallback callback,
+                                 intptr_t data) {
+    // Wrap the embedder callback here so we can also wrap the result as a
+    // Local<WasmCompiledModule> here.
+    streaming_decoder_->SetModuleCompiledCallback(
+        [callback, data](i::Handle<i::WasmModuleObject> module_object) {
+          callback(data, Local<WasmCompiledModule>::Cast(Utils::ToLocal(
+                             i::Handle<i::JSObject>::cast(module_object))));
+        });
+  }
+
+  bool SetCompiledModuleBytes(const uint8_t* bytes, size_t size) {
+    if (!i::wasm::IsSupportedVersion(reinterpret_cast<i::Isolate*>(isolate_),
+                                     {bytes, size}))
+      return false;
+    return streaming_decoder_->SetCompiledModuleBytes({bytes, size});
+  }
+
  private:
   Isolate* isolate_ = nullptr;
   std::shared_ptr<internal::wasm::StreamingDecoder> streaming_decoder_;
@@ -79,6 +98,15 @@ void WasmStreaming::Finish() { impl_->Finish(); }
 
 void WasmStreaming::Abort(MaybeLocal<Value> exception) {
   impl_->Abort(exception);
+}
+
+void WasmStreaming::SetModuleCompiledCallback(ModuleCompiledCallback callback,
+                                              intptr_t data) {
+  impl_->SetModuleCompiledCallback(callback, data);
+}
+
+bool WasmStreaming::SetCompiledModuleBytes(const uint8_t* bytes, size_t size) {
+  return impl_->SetCompiledModuleBytes(bytes, size);
 }
 
 // static
@@ -389,7 +417,6 @@ class AsyncInstantiateCompileResultResolver
 void WebAssemblyCompile(const v8::FunctionCallbackInfo<v8::Value>& args) {
   v8::Isolate* isolate = args.GetIsolate();
   i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
-  MicrotasksScope runs_microtasks(isolate, MicrotasksScope::kRunMicrotasks);
 
   HandleScope scope(isolate);
   ScheduledErrorThrower thrower(i_isolate, "WebAssembly.compile()");
@@ -424,7 +451,6 @@ void WebAssemblyCompileStreaming(
     const v8::FunctionCallbackInfo<v8::Value>& args) {
   v8::Isolate* isolate = args.GetIsolate();
   i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
-  MicrotasksScope runs_microtasks(isolate, MicrotasksScope::kRunMicrotasks);
   HandleScope scope(isolate);
   ScheduledErrorThrower thrower(i_isolate, "WebAssembly.compile()");
   Local<Context> context = isolate->GetCurrentContext();
@@ -643,8 +669,6 @@ void WebAssemblyInstance(const v8::FunctionCallbackInfo<v8::Value>& args) {
   i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
   i_isolate->CountUsage(
       v8::Isolate::UseCounterFeature::kWebAssemblyInstantiation);
-  MicrotasksScope does_not_run_microtasks(isolate,
-                                          MicrotasksScope::kDoNotRunMicrotasks);
 
   HandleScope scope(args.GetIsolate());
   if (i_isolate->wasm_instance_callback()(args)) return;
@@ -675,7 +699,6 @@ void WebAssemblyInstantiateStreaming(
   i_isolate->CountUsage(
       v8::Isolate::UseCounterFeature::kWebAssemblyInstantiation);
 
-  MicrotasksScope runs_microtasks(isolate, MicrotasksScope::kRunMicrotasks);
   HandleScope scope(isolate);
   Local<Context> context = isolate->GetCurrentContext();
   ScheduledErrorThrower thrower(i_isolate,
@@ -754,7 +777,6 @@ void WebAssemblyInstantiate(const v8::FunctionCallbackInfo<v8::Value>& args) {
   i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
   i_isolate->CountUsage(
       v8::Isolate::UseCounterFeature::kWebAssemblyInstantiation);
-  MicrotasksScope runs_microtasks(isolate, MicrotasksScope::kRunMicrotasks);
 
   ScheduledErrorThrower thrower(i_isolate, "WebAssembly Instantiation");
 
@@ -1476,6 +1498,7 @@ void SetDummyInstanceTemplate(Isolate* isolate, Handle<JSFunction> fun) {
   fun->shared()->get_api_func_data()->set_instance_template(*instance_template);
 }
 
+// static
 void WasmJs::Install(Isolate* isolate, bool exposed_on_global_object) {
   Handle<JSGlobalObject> global = isolate->global_object();
   Handle<Context> context(global->native_context(), isolate);

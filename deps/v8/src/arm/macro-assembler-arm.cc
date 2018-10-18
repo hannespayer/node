@@ -129,8 +129,7 @@ int TurboAssembler::PopCallerSaved(SaveFPRegsMode fp_mode, Register exclusion1,
 
 void TurboAssembler::LoadFromConstantsTable(Register destination,
                                             int constant_index) {
-  DCHECK(isolate()->heap()->RootCanBeTreatedAsConstant(
-      RootIndex::kBuiltinsConstantsTable));
+  DCHECK(RootsTable::IsImmortalImmovable(RootIndex::kBuiltinsConstantsTable));
 
   // The ldr call below could end up clobbering ip when the offset does not fit
   // into 12 bits (and thus needs to be loaded from the constant pool). In that
@@ -529,7 +528,8 @@ void MacroAssembler::Store(Register src,
 
 void TurboAssembler::LoadRoot(Register destination, RootIndex index,
                               Condition cond) {
-  ldr(destination, MemOperand(kRootRegister, RootRegisterOffset(index)), cond);
+  ldr(destination,
+      MemOperand(kRootRegister, RootRegisterOffsetForRootIndex(index)), cond);
 }
 
 
@@ -2032,6 +2032,10 @@ void MacroAssembler::AssertGeneratorObject(Register object) {
   Label do_check;
   Register instance_type = object;
   CompareInstanceType(map, instance_type, JS_GENERATOR_OBJECT_TYPE);
+  b(eq, &do_check);
+
+  // Check if JSAsyncFunctionObject (See MacroAssembler::CompareInstanceType)
+  cmp(instance_type, Operand(JS_ASYNC_FUNCTION_OBJECT_TYPE));
   b(eq, &do_check);
 
   // Check if JSAsyncGeneratorObject (See MacroAssembler::CompareInstanceType)

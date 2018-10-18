@@ -34,13 +34,13 @@ class Typer::Decorator final : public GraphDecorator {
   Typer* const typer_;
 };
 
-Typer::Typer(JSHeapBroker* js_heap_broker, Flags flags, Graph* graph)
+Typer::Typer(JSHeapBroker* broker, Flags flags, Graph* graph)
     : flags_(flags),
       graph_(graph),
       decorator_(nullptr),
       cache_(TypeCache::Get()),
-      js_heap_broker_(js_heap_broker),
-      operation_typer_(js_heap_broker, zone()) {
+      broker_(broker),
+      operation_typer_(broker, zone()) {
   singleton_false_ = operation_typer_.singleton_false();
   singleton_true_ = operation_typer_.singleton_true();
 
@@ -1163,6 +1163,10 @@ Type Typer::Visitor::TypeJSCreateArrayIterator(Node* node) {
   return Type::OtherObject();
 }
 
+Type Typer::Visitor::TypeJSCreateAsyncFunctionObject(Node* node) {
+  return Type::OtherObject();
+}
+
 Type Typer::Visitor::TypeJSCreateCollectionIterator(Node* node) {
   return Type::OtherObject();
 }
@@ -1433,7 +1437,6 @@ Type Typer::Visitor::JSCallTyper(Type fun, Typer* t) {
     // Unary math functions.
     case BuiltinFunctionId::kMathAbs:
     case BuiltinFunctionId::kMathExp:
-    case BuiltinFunctionId::kMathExpm1:
       return Type::Union(Type::PlainNumber(), Type::NaN(), t->zone());
     case BuiltinFunctionId::kMathAcos:
     case BuiltinFunctionId::kMathAcosh:
@@ -1443,6 +1446,7 @@ Type Typer::Visitor::JSCallTyper(Type fun, Typer* t) {
     case BuiltinFunctionId::kMathAtanh:
     case BuiltinFunctionId::kMathCbrt:
     case BuiltinFunctionId::kMathCos:
+    case BuiltinFunctionId::kMathExpm1:
     case BuiltinFunctionId::kMathFround:
     case BuiltinFunctionId::kMathLog:
     case BuiltinFunctionId::kMathLog1p:
@@ -1788,6 +1792,18 @@ Type Typer::Visitor::TypeJSGeneratorRestoreInputOrDebugPos(Node* node) {
 Type Typer::Visitor::TypeJSStackCheck(Node* node) { return Type::Any(); }
 
 Type Typer::Visitor::TypeJSDebugger(Node* node) { return Type::Any(); }
+
+Type Typer::Visitor::TypeJSAsyncFunctionEnter(Node* node) {
+  return Type::OtherObject();
+}
+
+Type Typer::Visitor::TypeJSAsyncFunctionReject(Node* node) {
+  return Type::OtherObject();
+}
+
+Type Typer::Visitor::TypeJSAsyncFunctionResolve(Node* node) {
+  return Type::OtherObject();
+}
 
 Type Typer::Visitor::TypeJSFulfillPromise(Node* node) {
   return Type::Undefined();
@@ -2199,7 +2215,7 @@ Type Typer::Visitor::TypeRuntimeAbort(Node* node) { UNREACHABLE(); }
 // Heap constants.
 
 Type Typer::Visitor::TypeConstant(Handle<Object> value) {
-  return Type::NewConstant(typer_->js_heap_broker(), value, zone());
+  return Type::NewConstant(typer_->broker(), value, zone());
 }
 
 }  // namespace compiler

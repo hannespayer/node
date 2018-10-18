@@ -633,7 +633,13 @@ ACCESSORS(JSDate, hour, Object, kHourOffset)
 ACCESSORS(JSDate, min, Object, kMinOffset)
 ACCESSORS(JSDate, sec, Object, kSecOffset)
 
-SMI_ACCESSORS(JSMessageObject, type, kTypeOffset)
+MessageTemplate JSMessageObject::type() const {
+  Object* value = READ_FIELD(this, kTypeOffset);
+  return MessageTemplateFromInt(Smi::ToInt(value));
+}
+void JSMessageObject::set_type(MessageTemplate value) {
+  WRITE_FIELD(this, kTypeOffset, Smi::FromInt(static_cast<int>(value)));
+}
 ACCESSORS(JSMessageObject, argument, Object, kArgumentsOffset)
 ACCESSORS(JSMessageObject, script, Script, kScriptOffset)
 ACCESSORS(JSMessageObject, stack_frames, Object, kStackFramesOffset)
@@ -764,13 +770,12 @@ NumberDictionary* JSObject::element_dictionary() {
 }
 
 void JSReceiver::initialize_properties() {
-  Heap* heap = GetHeap();
-  ReadOnlyRoots roots(heap);
+  ReadOnlyRoots roots = GetReadOnlyRoots();
   DCHECK(!Heap::InNewSpace(roots.empty_fixed_array()));
-  DCHECK(!Heap::InNewSpace(heap->empty_property_dictionary()));
+  DCHECK(!Heap::InNewSpace(roots.empty_property_dictionary()));
   if (map()->is_dictionary_map()) {
     WRITE_FIELD(this, kPropertiesOrHashOffset,
-                heap->empty_property_dictionary());
+                roots.empty_property_dictionary());
   } else {
     WRITE_FIELD(this, kPropertiesOrHashOffset, roots.empty_fixed_array());
   }
@@ -789,7 +794,7 @@ NameDictionary* JSReceiver::property_dictionary() const {
 
   Object* prop = raw_properties_or_hash();
   if (prop->IsSmi()) {
-    return GetHeap()->empty_property_dictionary();
+    return GetReadOnlyRoots().empty_property_dictionary();
   }
 
   return NameDictionary::cast(prop);

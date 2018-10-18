@@ -13,8 +13,9 @@
 #include "src/base/logging.h"
 #include "src/char-predicates.h"
 #include "src/globals.h"
-#include "src/messages.h"
+#include "src/message-template.h"
 #include "src/parsing/token.h"
+#include "src/pointer-with-payload.h"
 #include "src/unicode-decoder.h"
 #include "src/unicode.h"
 
@@ -29,6 +30,7 @@ class ExternalTwoByteString;
 class ParserRecorder;
 class RuntimeCallStats;
 class UnicodeCache;
+class Zone;
 
 // ---------------------------------------------------------------------
 // Buffered stream of UTF-16 code units, using an internal UTF-16 buffer.
@@ -107,6 +109,11 @@ class Utf16CharacterStream {
     } else {
       ReadBlockAt(pos);
     }
+  }
+
+  // Returns true if the stream could access the V8 heap after construction.
+  bool can_be_cloned_for_parallel_access() const {
+    return can_be_cloned() && !can_access_heap();
   }
 
   // Returns true if the stream can be cloned with Clone.
@@ -260,13 +267,13 @@ class Scanner {
 
   // This error is specifically an invalid hex or unicode escape sequence.
   bool has_error() const { return scanner_error_ != MessageTemplate::kNone; }
-  MessageTemplate::Template error() const { return scanner_error_; }
+  MessageTemplate error() const { return scanner_error_; }
   const Location& error_location() const { return scanner_error_location_; }
 
   bool has_invalid_template_escape() const {
     return current().invalid_template_escape_message != MessageTemplate::kNone;
   }
-  MessageTemplate::Template invalid_template_escape_message() const {
+  MessageTemplate invalid_template_escape_message() const {
     DCHECK(has_invalid_template_escape());
     return current().invalid_template_escape_message;
   }
@@ -335,12 +342,6 @@ class Scanner {
            CurrentMatchesContextualEscaped(Token::LET);
   }
 
-  // Check whether the CurrentSymbol() has already been seen.
-  // The DuplicateFinder holds the data, so different instances can be used
-  // for different sets of duplicates to check for.
-  bool IsDuplicateSymbol(DuplicateFinder* duplicate_finder,
-                         AstValueFactory* ast_value_factory) const;
-
   UnicodeCache* unicode_cache() const { return unicode_cache_; }
 
   // Returns the location of the last seen octal literal.
@@ -349,7 +350,7 @@ class Scanner {
     octal_pos_ = Location::invalid();
     octal_message_ = MessageTemplate::kNone;
   }
-  MessageTemplate::Template octal_message() const { return octal_message_; }
+  MessageTemplate octal_message() const { return octal_message_; }
 
   // Returns the value of the last smi that was scanned.
   uint32_t smi_value() const { return current().smi_value_; }
@@ -507,8 +508,8 @@ class Scanner {
 
     Vector<byte> backing_store_;
     int position_;
-    bool is_one_byte_;
-    bool is_used_;
+    bool is_one_byte_ : 1;
+    bool is_used_ : 1;
 
     DISALLOW_COPY_AND_ASSIGN(LiteralBuffer);
   };
@@ -518,17 +519,18 @@ class Scanner {
   class LiteralScope {
    public:
     explicit LiteralScope(Scanner* scanner)
-        : buffer_(&scanner->next().literal_chars), complete_(false) {
-      buffer_->Start();
+        : buffer_and_complete_(&scanner->next().literal_chars, false) {
+      buffer()->Start();
     }
     ~LiteralScope() {
-      if (!complete_) buffer_->Drop();
+      if (!buffer_and_complete_.GetPayload()) buffer()->Drop();
     }
-    void Complete() { complete_ = true; }
+    void Complete() { buffer_and_complete_.SetPayload(true); }
 
    private:
-    LiteralBuffer* buffer_;
-    bool complete_;
+    LiteralBuffer* buffer() const { return buffer_and_complete_.GetPointer(); }
+
+    PointerWithPayload<LiteralBuffer, bool, 1> buffer_and_complete_;
   };
 
   // The current and look-ahead token.
@@ -537,10 +539,9 @@ class Scanner {
     LiteralBuffer literal_chars;
     LiteralBuffer raw_literal_chars;
     Token::Value token = Token::UNINITIALIZED;
-    MessageTemplate::Template invalid_template_escape_message =
-        MessageTemplate::kNone;
-    Location invalid_template_escape_location;
     Token::Value contextual_token = Token::UNINITIALIZED;
+    MessageTemplate invalid_template_escape_message = MessageTemplate::kNone;
+    Location invalid_template_escape_location;
     uint32_t smi_value_ = 0;
     bool after_line_terminator = false;
   };
@@ -575,14 +576,13 @@ class Scanner {
     scanner_error_ = MessageTemplate::kNone;
   }
 
-  void ReportScannerError(const Location& location,
-                          MessageTemplate::Template error) {
+  void ReportScannerError(const Location& location, MessageTemplate error) {
     if (has_error()) return;
     scanner_error_ = error;
     scanner_error_location_ = location;
   }
 
-  void ReportScannerError(int pos, MessageTemplate::Template error) {
+  void ReportScannerError(int pos, MessageTemplate error) {
     if (has_error()) return;
     scanner_error_ = error;
     scanner_error_location_ = Location(pos, pos + 1);
@@ -822,9 +822,9 @@ class Scanner {
 
   // Last-seen positions of potentially problematic tokens.
   Location octal_pos_;
-  MessageTemplate::Template octal_message_;
+  MessageTemplate octal_message_;
 
-  MessageTemplate::Template scanner_error_;
+  MessageTemplate scanner_error_;
   Location scanner_error_location_;
 };
 

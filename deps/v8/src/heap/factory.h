@@ -800,15 +800,15 @@ class V8_EXPORT_PRIVATE Factory {
   inline Handle<Object> NewURIError();
 
   Handle<Object> NewError(Handle<JSFunction> constructor,
-                          MessageTemplate::Template template_index,
+                          MessageTemplate template_index,
                           Handle<Object> arg0 = Handle<Object>(),
                           Handle<Object> arg1 = Handle<Object>(),
                           Handle<Object> arg2 = Handle<Object>());
 
-#define DECLARE_ERROR(NAME)                                          \
-  Handle<Object> New##NAME(MessageTemplate::Template template_index, \
-                           Handle<Object> arg0 = Handle<Object>(),   \
-                           Handle<Object> arg1 = Handle<Object>(),   \
+#define DECLARE_ERROR(NAME)                                        \
+  Handle<Object> New##NAME(MessageTemplate template_index,         \
+                           Handle<Object> arg0 = Handle<Object>(), \
+                           Handle<Object> arg1 = Handle<Object>(), \
                            Handle<Object> arg2 = Handle<Object>());
   DECLARE_ERROR(Error)
   DECLARE_ERROR(EvalError)
@@ -867,12 +867,9 @@ class V8_EXPORT_PRIVATE Factory {
   Handle<Map> CreateClassFunctionMap(Handle<JSFunction> empty_function);
 
   // Allocates a new JSMessageObject object.
-  Handle<JSMessageObject> NewJSMessageObject(MessageTemplate::Template message,
-                                             Handle<Object> argument,
-                                             int start_position,
-                                             int end_position,
-                                             Handle<Script> script,
-                                             Handle<Object> stack_frames);
+  Handle<JSMessageObject> NewJSMessageObject(
+      MessageTemplate message, Handle<Object> argument, int start_position,
+      int end_position, Handle<Script> script, Handle<Object> stack_frames);
 
   Handle<DebugInfo> NewDebugInfo(Handle<SharedFunctionInfo> shared);
 
@@ -911,6 +908,8 @@ class V8_EXPORT_PRIVATE Factory {
   // Converts the given ToPrimitive hint to it's string representation.
   Handle<String> ToPrimitiveHintString(ToPrimitiveHint hint);
 
+  Handle<JSPromise> NewJSPromiseWithoutHook(
+      PretenureFlag pretenure = NOT_TENURED);
   Handle<JSPromise> NewJSPromise(PretenureFlag pretenure = NOT_TENURED);
 
   Handle<CallHandlerInfo> NewCallHandlerInfo(bool has_no_side_effect = false);
@@ -977,9 +976,6 @@ class V8_EXPORT_PRIVATE Factory {
   // Create a JSArray with no elements and no length.
   Handle<JSArray> NewJSArray(ElementsKind elements_kind,
                              PretenureFlag pretenure = NOT_TENURED);
-
-  Handle<JSPromise> NewJSPromiseWithoutHook(
-      PretenureFlag pretenure = NOT_TENURED);
 
   Handle<SharedFunctionInfo> NewSharedFunctionInfo(
       MaybeHandle<String> name, MaybeHandle<HeapObject> maybe_function_data,

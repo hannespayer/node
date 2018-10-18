@@ -687,6 +687,7 @@ void Assembler::mov(Operand dst, Register src) {
 }
 
 void Assembler::movsx_b(Register dst, Operand src) {
+  DCHECK_IMPLIES(src.is_reg_only(), src.reg().is_byte_register());
   EnsureSpace ensure_space(this);
   EMIT(0x0F);
   EMIT(0xBE);
@@ -701,6 +702,7 @@ void Assembler::movsx_w(Register dst, Operand src) {
 }
 
 void Assembler::movzx_b(Register dst, Operand src) {
+  DCHECK_IMPLIES(src.is_reg_only(), src.reg().is_byte_register());
   EnsureSpace ensure_space(this);
   EMIT(0x0F);
   EMIT(0xB6);
@@ -2214,6 +2216,10 @@ void Assembler::setcc(Condition cc, Register reg) {
 
 void Assembler::cvttss2si(Register dst, Operand src) {
   EnsureSpace ensure_space(this);
+  // The [src] might contain ebx's register code, but in
+  // this case, it refers to xmm3, so it is OK to emit.
+  AllowExplicitEbxAccessScope accessing_xmm_register(this);
+  DCHECK(is_ebx_addressable_ || dst != ebx);
   EMIT(0xF3);
   EMIT(0x0F);
   EMIT(0x2C);
@@ -2222,6 +2228,10 @@ void Assembler::cvttss2si(Register dst, Operand src) {
 
 void Assembler::cvttsd2si(Register dst, Operand src) {
   EnsureSpace ensure_space(this);
+  // The [src] might contain ebx's register code, but in
+  // this case, it refers to xmm3, so it is OK to emit.
+  AllowExplicitEbxAccessScope accessing_xmm_register(this);
+  DCHECK(is_ebx_addressable_ || dst != ebx);
   EMIT(0xF2);
   EMIT(0x0F);
   EMIT(0x2C);

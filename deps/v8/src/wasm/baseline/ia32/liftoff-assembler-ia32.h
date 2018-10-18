@@ -43,10 +43,7 @@ inline Operand GetHalfStackSlot(uint32_t half_index) {
 inline Operand GetInstanceOperand() { return Operand(ebp, -8); }
 
 static constexpr LiftoffRegList kByteRegs =
-    LiftoffRegList::FromBits<Register::ListOf<eax, ecx, edx, ebx>()>();
-static_assert(kByteRegs.GetNumRegsSet() == 4, "should have four byte regs");
-static_assert((kByteRegs & kGpCacheRegList) == kByteRegs,
-              "kByteRegs only contains gp cache registers");
+    LiftoffRegList::FromBits<Register::ListOf<eax, ecx, edx>()>();
 
 inline void Load(LiftoffAssembler* assm, LiftoffRegister dst, Register base,
                  int32_t offset, ValueType type) {
@@ -324,7 +321,13 @@ void LiftoffAssembler::Store(Register dst_addr, Register offset_reg,
       if (src.gp().is_byte_register()) {
         mov_b(dst_op, src.gp());
       } else {
-        Register byte_src = GetUnusedRegister(liftoff::kByteRegs, pinned).gp();
+        // We know that {src} is not a byte register, so the only pinned byte
+        // registers (beside the outer {pinned}) are {dst_addr} and potentially
+        // {offset_reg}.
+        LiftoffRegList pinned_byte = pinned | LiftoffRegList::ForRegs(dst_addr);
+        if (offset_reg != no_reg) pinned_byte.set(offset_reg);
+        Register byte_src =
+            GetUnusedRegister(liftoff::kByteRegs, pinned_byte).gp();
         mov(byte_src, src.gp());
         mov_b(dst_op, byte_src);
       }
@@ -768,7 +771,7 @@ void LiftoffAssembler::emit_i64_mul(LiftoffRegister dst, LiftoffRegister lhs,
   Register lhs_hi = ecx;
   Register lhs_lo = dst_lo;
   Register rhs_hi = dst_hi;
-  Register rhs_lo = ebx;
+  Register rhs_lo = esi;
 
   // Spill all these registers if they are still holding other values.
   liftoff::SpillRegisters(this, dst_hi, dst_lo, lhs_hi, rhs_lo);
@@ -784,7 +787,7 @@ void LiftoffAssembler::emit_i64_mul(LiftoffRegister dst, LiftoffRegister lhs,
   imul(rhs_hi, lhs_lo);
   // Add them: lhs_hi'' = lhs_hi' + rhs_hi' = lhs_hi * rhs_lo + rhs_hi * lhs_lo.
   add(lhs_hi, rhs_hi);
-  // Third mul: edx:eax (dst_hi:dst_lo) = eax * ebx (lhs_lo * rhs_lo).
+  // Third mul: edx:eax (dst_hi:dst_lo) = eax * esi (lhs_lo * rhs_lo).
   mul(rhs_lo);
   // Add lhs_hi'' to dst_hi.
   add(dst_hi, lhs_hi);
@@ -1239,7 +1242,8 @@ inline void ConvertFloatToIntAndBack(LiftoffAssembler* assm, Register dst,
       assm->Cvtsi2sd(converted_back, dst);
     } else {  // f64 -> u32
       assm->Cvttsd2ui(dst, src, liftoff::kScratchDoubleReg);
-      assm->Cvtui2sd(converted_back, dst);
+      assm->Cvtui2sd(converted_back, dst,
+                     assm->GetUnusedRegister(kGpReg, pinned).gp());
     }
   } else {                                  // f32
     if (std::is_signed<dst_type>::value) {  // f32 -> i32
@@ -1346,9 +1350,12 @@ bool LiftoffAssembler::emit_type_conversion(WasmOpcode opcode,
     case kExprF64SConvertI32:
       Cvtsi2sd(dst.fp(), src.gp());
       return true;
-    case kExprF64UConvertI32:
-      Cvtui2sd(dst.fp(), src.gp());
+    case kExprF64UConvertI32: {
+      LiftoffRegList pinned = LiftoffRegList::ForRegs(dst, src);
+      Register scratch = GetUnusedRegister(kGpReg, pinned).gp();
+      Cvtui2sd(dst.fp(), src.gp(), scratch);
       return true;
+    }
     case kExprF64ConvertF32:
       cvtss2sd(dst.fp(), src.fp());
       return true;

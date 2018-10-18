@@ -122,8 +122,7 @@ int TurboAssembler::PopCallerSaved(SaveFPRegsMode fp_mode, Register exclusion1,
 
 void TurboAssembler::LoadFromConstantsTable(Register destination,
                                             int constant_index) {
-  DCHECK(isolate()->heap()->RootCanBeTreatedAsConstant(
-      RootIndex::kBuiltinsConstantsTable));
+  DCHECK(RootsTable::IsImmortalImmovable(RootIndex::kBuiltinsConstantsTable));
 
   const uint32_t offset =
       FixedArray::kHeaderSize + constant_index * kPointerSize - kHeapObjectTag;
@@ -431,7 +430,8 @@ void TurboAssembler::MultiPopDoubles(RegList dregs, Register location) {
 
 void TurboAssembler::LoadRoot(Register destination, RootIndex index,
                               Condition) {
-  LoadP(destination, MemOperand(kRootRegister, RootRegisterOffset(index)), r0);
+  LoadP(destination,
+        MemOperand(kRootRegister, RootRegisterOffsetForRootIndex(index)), r0);
 }
 
 void MacroAssembler::RecordWriteField(Register object, int offset,
@@ -1513,7 +1513,7 @@ void MacroAssembler::CompareInstanceType(Register map, Register type_reg,
 }
 
 void MacroAssembler::CompareRoot(Register obj, RootIndex index) {
-  CmpP(obj, MemOperand(kRootRegister, RootRegisterOffset(index)));
+  CmpP(obj, MemOperand(kRootRegister, RootRegisterOffsetForRootIndex(index)));
 }
 
 void MacroAssembler::CallStub(CodeStub* stub, Condition cond) {
@@ -1820,6 +1820,10 @@ void MacroAssembler::AssertGeneratorObject(Register object) {
   Label do_check;
   Register instance_type = object;
   CompareInstanceType(map, instance_type, JS_GENERATOR_OBJECT_TYPE);
+  beq(&do_check);
+
+  // Check if JSAsyncFunctionObject (See MacroAssembler::CompareInstanceType)
+  CmpP(instance_type, Operand(JS_ASYNC_FUNCTION_OBJECT_TYPE));
   beq(&do_check);
 
   // Check if JSAsyncGeneratorObject (See MacroAssembler::CompareInstanceType)

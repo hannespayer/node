@@ -18,6 +18,7 @@
 #include "src/objects-inl.h"
 #include "src/wasm/function-compiler.h"
 #include "src/wasm/jump-table-assembler.h"
+#include "src/wasm/wasm-import-wrapper-cache-inl.h"
 #include "src/wasm/wasm-module.h"
 #include "src/wasm/wasm-objects-inl.h"
 #include "src/wasm/wasm-objects.h"
@@ -342,6 +343,8 @@ NativeModule::NativeModule(Isolate* isolate, const WasmFeatures& enabled,
     : enabled_features_(enabled),
       module_(std::move(module)),
       compilation_state_(NewCompilationState(isolate, env)),
+      import_wrapper_cache_(std::unique_ptr<WasmImportWrapperCache>(
+          new WasmImportWrapperCache(this))),
       free_code_space_(code_space.region()),
       wasm_code_manager_(code_manager),
       can_request_more_memory_(can_request_more),
@@ -394,7 +397,7 @@ WasmCode* NativeModule::AddOwnedCode(
   {
     // Both allocation and insertion in owned_code_ happen in the same critical
     // section, thus ensuring owned_code_'s elements are rarely if ever moved.
-    base::LockGuard<base::Mutex> lock(&allocation_mutex_);
+    base::MutexGuard lock(&allocation_mutex_);
     Vector<byte> executable_buffer = AllocateForCode(instructions.size());
     // Ownership will be transferred to {owned_code_} below.
     code = new WasmCode(this, index, executable_buffer, stack_slots,
@@ -424,20 +427,13 @@ WasmCode* NativeModule::AddOwnedCode(
   return code;
 }
 
-WasmCode* NativeModule::AddImportWrapper(Handle<Code> code, uint32_t index) {
-  // TODO(wasm): Adding instance-specific wasm-to-js wrappers as owned code to
-  // this NativeModule is a memory leak until the whole NativeModule dies.
-  WasmCode* ret = AddAnonymousCode(code, WasmCode::kWasmToJsWrapper);
-  DCHECK_LT(index, module_->num_imported_functions);
-  ret->index_ = index;
-  return ret;
-}
-
-WasmCode* NativeModule::AddInterpreterEntry(Handle<Code> code, uint32_t index) {
+WasmCode* NativeModule::AddInterpreterEntry(Handle<Code> code,
+                                            uint32_t func_index) {
   WasmCode* ret = AddAnonymousCode(code, WasmCode::kInterpreterEntry);
-  ret->index_ = index;
-  base::LockGuard<base::Mutex> lock(&allocation_mutex_);
+  ret->index_ = func_index;
+  base::MutexGuard lock(&allocation_mutex_);
   InstallCode(ret);
+  SetInterpreterRedirection(func_index);
   return ret;
 }
 
@@ -463,6 +459,7 @@ void NativeModule::SetLazyBuiltin(Handle<Code> code) {
 }
 
 void NativeModule::SetRuntimeStubs(Isolate* isolate) {
+  HandleScope scope(isolate);
   DCHECK_NULL(runtime_stub_table_[0]);  // Only called once.
 #define COPY_BUILTIN(Name)                                                     \
   runtime_stub_table_[WasmCode::k##Name] =                                     \
@@ -602,7 +599,7 @@ WasmCode* NativeModule::AddDeserializedCode(
   if (!code->protected_instructions_.is_empty()) {
     code->RegisterTrapHandlerData();
   }
-  base::LockGuard<base::Mutex> lock(&allocation_mutex_);
+  base::MutexGuard lock(&allocation_mutex_);
   InstallCode(code);
   // Note: we do not flush the i-cache here, since the code needs to be
   // relocated anyway. The caller is responsible for flushing the i-cache later.
@@ -610,13 +607,11 @@ WasmCode* NativeModule::AddDeserializedCode(
 }
 
 void NativeModule::PublishCode(WasmCode* code) {
-  base::LockGuard<base::Mutex> lock(&allocation_mutex_);
+  base::MutexGuard lock(&allocation_mutex_);
   // Skip publishing code if there is an active redirection to the interpreter
   // for the given function index, in order to preserve the redirection.
-  if (has_code(code->index()) &&
-      this->code(code->index())->kind() == WasmCode::kInterpreterEntry) {
-    return;
-  }
+  if (has_interpreter_redirection(code->index())) return;
+
   if (!code->protected_instructions_.is_empty()) {
     code->RegisterTrapHandlerData();
   }
@@ -624,7 +619,7 @@ void NativeModule::PublishCode(WasmCode* code) {
 }
 
 std::vector<WasmCode*> NativeModule::SnapshotCodeTable() const {
-  base::LockGuard<base::Mutex> lock(&allocation_mutex_);
+  base::MutexGuard lock(&allocation_mutex_);
   std::vector<WasmCode*> result;
   result.reserve(code_table().size());
   for (WasmCode* code : code_table()) result.push_back(code);
@@ -654,8 +649,10 @@ void NativeModule::InstallCode(WasmCode* code) {
   DCHECK_LT(code->index(), num_functions());
   DCHECK_LE(module_->num_imported_functions, code->index());
 
-  // Update code table.
-  code_table_[code->index() - module_->num_imported_functions] = code;
+  // Update code table, except for interpreter entries.
+  if (code->kind() != WasmCode::kInterpreterEntry) {
+    code_table_[code->index() - module_->num_imported_functions] = code;
+  }
 
   // Patch jump table.
   uint32_t slot_idx = code->index() - module_->num_imported_functions;
@@ -706,6 +703,9 @@ Vector<byte> NativeModule::AllocateForCode(size_t size) {
   // start is already committed (or we start at the beginning of a page).
   // The end needs to be committed all through the end of the page.
   if (commit_start < commit_end) {
+    committed_code_space_.fetch_add(commit_end - commit_start);
+    // Committed code cannot grow bigger than maximum code space size.
+    DCHECK_LE(committed_code_space_.load(), kMaxWasmCodeMemory);
 #if V8_OS_WIN
     // On Windows, we cannot commit a region that straddles different
     // reservations of virtual memory. Because we bump-allocate, and because, if
@@ -729,14 +729,12 @@ Vector<byte> NativeModule::AllocateForCode(size_t size) {
       if (commit_start >= commit_end) break;
     }
 #else
-    size_t commit_size = static_cast<size_t>(commit_end - commit_start);
-    if (!wasm_code_manager_->Commit(commit_start, commit_size)) {
+    if (!wasm_code_manager_->Commit(commit_start, commit_end - commit_start)) {
       V8::FatalProcessOutOfMemory(nullptr,
                                   "NativeModule::AllocateForCode commit");
       UNREACHABLE();
     }
 #endif
-    committed_code_space_.fetch_add(commit_end - commit_start);
   }
   DCHECK(IsAligned(mem.begin(), kCodeAlignment));
   allocated_code_space_.Merge(mem);
@@ -745,7 +743,7 @@ Vector<byte> NativeModule::AllocateForCode(size_t size) {
 }
 
 WasmCode* NativeModule::Lookup(Address pc) const {
-  base::LockGuard<base::Mutex> lock(&allocation_mutex_);
+  base::MutexGuard lock(&allocation_mutex_);
   if (owned_code_.empty()) return nullptr;
   auto iter = std::upper_bound(owned_code_.begin(), owned_code_.end(), pc,
                                WasmCodeUniquePtrComparator());
@@ -840,13 +838,13 @@ bool WasmCodeManager::Commit(Address start, size_t size) {
 
 void WasmCodeManager::AssignRanges(Address start, Address end,
                                    NativeModule* native_module) {
-  base::LockGuard<base::Mutex> lock(&native_modules_mutex_);
+  base::MutexGuard lock(&native_modules_mutex_);
   lookup_map_.insert(std::make_pair(start, std::make_pair(end, native_module)));
 }
 
 void WasmCodeManager::AssignRangesAndAddModule(Address start, Address end,
                                                NativeModule* native_module) {
-  base::LockGuard<base::Mutex> lock(&native_modules_mutex_);
+  base::MutexGuard lock(&native_modules_mutex_);
   lookup_map_.insert(std::make_pair(start, std::make_pair(end, native_module)));
   native_modules_.emplace(native_module);
 }
@@ -874,7 +872,7 @@ VirtualMemory WasmCodeManager::TryAllocate(size_t size, void* hint) {
 }
 
 void WasmCodeManager::SampleModuleSizes(Isolate* isolate) const {
-  base::LockGuard<base::Mutex> lock(&native_modules_mutex_);
+  base::MutexGuard lock(&native_modules_mutex_);
   for (NativeModule* native_module : native_modules_) {
     int code_size =
         static_cast<int>(native_module->committed_code_space_.load() / MB);
@@ -921,7 +919,7 @@ size_t WasmCodeManager::EstimateNativeModuleSize(const WasmModule* module) {
 }
 
 bool WasmCodeManager::ShouldForceCriticalMemoryPressureNotification() {
-  base::LockGuard<base::Mutex> lock(&native_modules_mutex_);
+  base::MutexGuard lock(&native_modules_mutex_);
   // TODO(titzer): we force a critical memory pressure notification
   // when the code space is almost exhausted, but only upon the next module
   // creation. This is only for one isolate, and it should really do this for
@@ -1021,7 +1019,7 @@ bool NativeModule::SetExecutable(bool executable) {
 }
 
 void WasmCodeManager::FreeNativeModule(NativeModule* native_module) {
-  base::LockGuard<base::Mutex> lock(&native_modules_mutex_);
+  base::MutexGuard lock(&native_modules_mutex_);
   DCHECK_EQ(1, native_modules_.count(native_module));
   native_modules_.erase(native_module);
   TRACE_HEAP("Freeing NativeModule %p\n", this);
@@ -1039,10 +1037,12 @@ void WasmCodeManager::FreeNativeModule(NativeModule* native_module) {
   size_t code_size = native_module->committed_code_space_.load();
   DCHECK(IsAligned(code_size, AllocatePageSize()));
   remaining_uncommitted_code_space_.fetch_add(code_size);
+  // Remaining code space cannot grow bigger than maximum code space size.
+  DCHECK_LE(remaining_uncommitted_code_space_.load(), kMaxWasmCodeMemory);
 }
 
 NativeModule* WasmCodeManager::LookupNativeModule(Address pc) const {
-  base::LockGuard<base::Mutex> lock(&native_modules_mutex_);
+  base::MutexGuard lock(&native_modules_mutex_);
   if (lookup_map_.empty()) return nullptr;
 
   auto iter = lookup_map_.upper_bound(pc);

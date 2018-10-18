@@ -605,10 +605,6 @@ const char* Heap::GetSpaceName(int idx) {
   return nullptr;
 }
 
-void Heap::SetRootCodeStubs(SimpleNumberDictionary* value) {
-  roots_[RootIndex::kCodeStubs] = value;
-}
-
 void Heap::RepairFreeListsAfterDeserialization() {
   PagedSpaces spaces(this);
   for (PagedSpace* space = spaces.next(); space != nullptr;
@@ -982,6 +978,8 @@ void Heap::HandleGCRequest() {
 
 
 void Heap::ScheduleIdleScavengeIfNeeded(int bytes_allocated) {
+  DCHECK(FLAG_idle_time_scavenge);
+  DCHECK_NOT_NULL(scavenge_job_);
   scavenge_job_->ScheduleIdleTaskIfNeeded(this, bytes_allocated);
 }
 
@@ -1124,9 +1122,12 @@ void Heap::CollectAllAvailableGarbage(GarbageCollectionReason gc_reason) {
   isolate_->compilation_cache()->Clear();
   const int kMaxNumberOfAttempts = 7;
   const int kMinNumberOfAttempts = 2;
+  const v8::GCCallbackFlags callback_flags =
+      gc_reason == GarbageCollectionReason::kLowMemoryNotification
+          ? v8::kGCCallbackFlagForced
+          : v8::kGCCallbackFlagCollectAllAvailableGarbage;
   for (int attempt = 0; attempt < kMaxNumberOfAttempts; attempt++) {
-    if (!CollectGarbage(OLD_SPACE, gc_reason,
-                        v8::kGCCallbackFlagCollectAllAvailableGarbage) &&
+    if (!CollectGarbage(OLD_SPACE, gc_reason, callback_flags) &&
         attempt + 1 >= kMinNumberOfAttempts) {
       break;
     }
@@ -1601,6 +1602,11 @@ bool Heap::PerformGarbageCollection(
 
   {
     GCCallbacksScope scope(this);
+    // Temporary override any embedder stack state as callbacks may create their
+    // own state on the stack and recursively trigger GC.
+    EmbedderStackStateScope embedder_scope(
+        local_embedder_heap_tracer(),
+        EmbedderHeapTracer::EmbedderStackState::kUnknown);
     if (scope.CheckReenter()) {
       AllowHeapAllocation allow_allocation;
       TRACE_GC(tracer(), GCTracer::Scope::HEAP_EXTERNAL_PROLOGUE);
@@ -1852,7 +1858,7 @@ void Heap::CheckNewSpaceExpansionCriteria() {
 
 void Heap::EvacuateYoungGeneration() {
   TRACE_GC(tracer(), GCTracer::Scope::SCAVENGER_FAST_PROMOTE);
-  base::LockGuard<base::Mutex> guard(relocation_mutex());
+  base::MutexGuard guard(relocation_mutex());
   ConcurrentMarking::PauseScope pause_scope(concurrent_marking());
   if (!FLAG_concurrent_marking) {
     DCHECK(fast_promotion_mode_);
@@ -1895,7 +1901,7 @@ void Heap::EvacuateYoungGeneration() {
 
 void Heap::Scavenge() {
   TRACE_GC(tracer(), GCTracer::Scope::SCAVENGER_SCAVENGE);
-  base::LockGuard<base::Mutex> guard(relocation_mutex());
+  base::MutexGuard guard(relocation_mutex());
   ConcurrentMarking::PauseScope pause_scope(concurrent_marking());
   // There are soft limits in the allocation code, designed to trigger a mark
   // sweep collection by failing allocations. There is no sense in trying to
@@ -1948,7 +1954,7 @@ void Heap::ComputeFastPromotionMode() {
 
 void Heap::UnprotectAndRegisterMemoryChunk(MemoryChunk* chunk) {
   if (unprotected_memory_chunks_registry_enabled_) {
-    base::LockGuard<base::Mutex> guard(&unprotected_memory_chunks_mutex_);
+    base::MutexGuard guard(&unprotected_memory_chunks_mutex_);
     if (unprotected_memory_chunks_.insert(chunk).second) {
       chunk->SetReadAndWritable();
     }
@@ -2378,44 +2384,6 @@ void Heap::CreateFixedStubs() {
   Heap::CreateJSRunMicrotasksEntryStub();
 }
 
-bool Heap::RootCanBeWrittenAfterInitialization(RootIndex root_index) {
-  switch (root_index) {
-    case RootIndex::kNumberStringCache:
-    case RootIndex::kCodeStubs:
-    case RootIndex::kScriptList:
-    case RootIndex::kMaterializedObjects:
-    case RootIndex::kDetachedContexts:
-    case RootIndex::kRetainedMaps:
-    case RootIndex::kRetainingPathTargets:
-    case RootIndex::kFeedbackVectorsForProfilingTools:
-    case RootIndex::kNoScriptSharedFunctionInfos:
-    case RootIndex::kSerializedObjects:
-    case RootIndex::kSerializedGlobalProxySizes:
-    case RootIndex::kPublicSymbolTable:
-    case RootIndex::kApiSymbolTable:
-    case RootIndex::kApiPrivateSymbolTable:
-    case RootIndex::kMessageListeners:
-// Smi values
-#define SMI_ENTRY(type, name, Name) case RootIndex::k##Name:
-      SMI_ROOT_LIST(SMI_ENTRY)
-#undef SMI_ENTRY
-    // String table
-    case RootIndex::kStringTable:
-      return true;
-
-    default:
-      return false;
-  }
-}
-
-bool Heap::RootCanBeTreatedAsConstant(RootIndex root_index) {
-  bool can_be = !RootCanBeWrittenAfterInitialization(root_index) &&
-                !InNewSpace(root(root_index));
-  DCHECK_IMPLIES(can_be, IsImmovable(HeapObject::cast(root(root_index))));
-  return can_be;
-}
-
-
 void Heap::FlushNumberStringCache() {
   // Flush the number to string cache.
   int len = number_string_cache()->length();
@@ -2430,13 +2398,13 @@ HeapObject* Heap::CreateFillerObjectAt(Address addr, int size,
   if (size == 0) return nullptr;
   HeapObject* filler = HeapObject::FromAddress(addr);
   if (size == kPointerSize) {
-    filler->set_map_after_allocation(
-        reinterpret_cast<Map*>(root(RootIndex::kOnePointerFillerMap)),
-        SKIP_WRITE_BARRIER);
+    filler->set_map_after_allocation(reinterpret_cast<Map*>(isolate()->root(
+                                         RootIndex::kOnePointerFillerMap)),
+                                     SKIP_WRITE_BARRIER);
   } else if (size == 2 * kPointerSize) {
-    filler->set_map_after_allocation(
-        reinterpret_cast<Map*>(root(RootIndex::kTwoPointerFillerMap)),
-        SKIP_WRITE_BARRIER);
+    filler->set_map_after_allocation(reinterpret_cast<Map*>(isolate()->root(
+                                         RootIndex::kTwoPointerFillerMap)),
+                                     SKIP_WRITE_BARRIER);
     if (clear_memory_mode == ClearFreedMemoryMode::kClearFreedMemory) {
       Memory<Address>(addr + kPointerSize) =
           static_cast<Address>(kClearedFreeMemoryValue);
@@ -2444,7 +2412,7 @@ HeapObject* Heap::CreateFillerObjectAt(Address addr, int size,
   } else {
     DCHECK_GT(size, 2 * kPointerSize);
     filler->set_map_after_allocation(
-        reinterpret_cast<Map*>(root(RootIndex::kFreeSpaceMap)),
+        reinterpret_cast<Map*>(isolate()->root(RootIndex::kFreeSpaceMap)),
         SKIP_WRITE_BARRIER);
     FreeSpace::cast(filler)->relaxed_write_size(size);
     if (clear_memory_mode == ClearFreedMemoryMode::kClearFreedMemory) {
@@ -2600,6 +2568,7 @@ FixedArrayBase* Heap::LeftTrimFixedArray(FixedArrayBase* object,
     // Make sure the stack or other roots (e.g., Handles) don't contain pointers
     // to the original FixedArray (which is now the filler object).
     LeftTrimmerVerifierRootVisitor root_visitor(object);
+    ReadOnlyRoots(this).Iterate(&root_visitor);
     IterateRoots(&root_visitor, VISIT_ALL);
   }
 #endif  // ENABLE_SLOW_DCHECKS
@@ -3243,9 +3212,10 @@ void Heap::MemoryPressureNotification(MemoryPressureLevel level,
     } else {
       ExecutionAccess access(isolate());
       isolate()->stack_guard()->RequestGC();
-      V8::GetCurrentPlatform()->CallOnForegroundThread(
-          reinterpret_cast<v8::Isolate*>(isolate()),
-          new MemoryPressureInterruptTask(this));
+      auto taskrunner = V8::GetCurrentPlatform()->GetForegroundTaskRunner(
+          reinterpret_cast<v8::Isolate*>(isolate()));
+      taskrunner->PostTask(
+          base::make_unique<MemoryPressureInterruptTask>(this));
     }
   }
 }
@@ -3253,7 +3223,7 @@ void Heap::MemoryPressureNotification(MemoryPressureLevel level,
 void Heap::EagerlyFreeExternalMemory() {
   for (Page* page : *old_space()) {
     if (!page->SweepingDone()) {
-      base::LockGuard<base::Mutex> guard(page->mutex());
+      base::MutexGuard guard(page->mutex());
       if (!page->SweepingDone()) {
         ArrayBufferTracker::FreeDead(
             page, mark_compact_collector()->non_atomic_marking_state());
@@ -3472,23 +3442,6 @@ bool Heap::IsValidAllocationSpace(AllocationSpace space) {
   }
 }
 
-bool Heap::RootIsImmortalImmovable(RootIndex root_index) {
-  switch (root_index) {
-#define IMMORTAL_IMMOVABLE_ROOT(name) case RootIndex::k##name:
-    IMMORTAL_IMMOVABLE_ROOT_LIST(IMMORTAL_IMMOVABLE_ROOT)
-#undef IMMORTAL_IMMOVABLE_ROOT
-#define INTERNALIZED_STRING(_, name, value) case RootIndex::k##name:
-    INTERNALIZED_STRING_LIST_GENERATOR(INTERNALIZED_STRING, /* not used */)
-#undef INTERNALIZED_STRING
-#define STRING_TYPE(NAME, size, name, Name) case RootIndex::k##Name##Map:
-    STRING_TYPE_LIST(STRING_TYPE)
-#undef STRING_TYPE
-    return true;
-    default:
-      return false;
-  }
-}
-
 #ifdef VERIFY_HEAP
 class VerifyReadOnlyPointersVisitor : public VerifyPointersVisitor {
  public:
@@ -3689,20 +3642,20 @@ Code* Heap::builtin(int index) {
   DCHECK(Builtins::IsBuiltinId(index));
   // Code::cast cannot be used here since we access builtins
   // during the marking phase of mark sweep. See IC::Clear.
-  return reinterpret_cast<Code*>(builtins_[index]);
+  return reinterpret_cast<Code*>(builtins_table()[index]);
 }
 
 Address Heap::builtin_address(int index) {
   DCHECK(Builtins::IsBuiltinId(index) || index == Builtins::builtin_count);
-  return reinterpret_cast<Address>(&builtins_[index]);
+  return reinterpret_cast<Address>(&builtins_table()[index]);
 }
 
 void Heap::set_builtin(int index, HeapObject* builtin) {
   DCHECK(Builtins::IsBuiltinId(index));
-  DCHECK(Internals::HasHeapObjectTag(builtin));
+  DCHECK(Internals::HasHeapObjectTag(reinterpret_cast<Address>(builtin)));
   // The given builtin may be completely uninitialized thus we cannot check its
   // type here.
-  builtins_[index] = builtin;
+  builtins_table()[index] = builtin;
 }
 
 void Heap::IterateRoots(RootVisitor* v, VisitMode mode) {
@@ -3715,7 +3668,7 @@ void Heap::IterateWeakRoots(RootVisitor* v, VisitMode mode) {
                          mode == VISIT_ALL_IN_MINOR_MC_MARK ||
                          mode == VISIT_ALL_IN_MINOR_MC_UPDATE;
   v->VisitRootPointer(Root::kStringTable, nullptr,
-                      &roots_[RootIndex::kStringTable]);
+                      &roots_table()[RootIndex::kStringTable]);
   v->Synchronize(VisitorSynchronization::kStringTable);
   if (!isMinorGC && mode != VISIT_ALL_IN_SWEEP_NEWSPACE &&
       mode != VISIT_FOR_SERIALIZATION) {
@@ -3730,8 +3683,9 @@ void Heap::IterateWeakRoots(RootVisitor* v, VisitMode mode) {
 void Heap::IterateSmiRoots(RootVisitor* v) {
   // Acquire execution access since we are going to read stack limit values.
   ExecutionAccess access(isolate());
-  v->VisitRootPointers(Root::kSmiRootList, nullptr, roots_.smi_roots_begin(),
-                       roots_.smi_roots_end());
+  v->VisitRootPointers(Root::kSmiRootList, nullptr,
+                       roots_table().smi_roots_begin(),
+                       roots_table().smi_roots_end());
   v->Synchronize(VisitorSynchronization::kSmiRootList);
 }
 
@@ -3789,7 +3743,8 @@ void Heap::IterateStrongRoots(RootVisitor* v, VisitMode mode) {
                          mode == VISIT_ALL_IN_MINOR_MC_MARK ||
                          mode == VISIT_ALL_IN_MINOR_MC_UPDATE;
   v->VisitRootPointers(Root::kStrongRootList, nullptr,
-                       roots_.strong_roots_begin(), roots_.strong_roots_end());
+                       roots_table().strong_roots_begin(),
+                       roots_table().strong_roots_end());
   v->Synchronize(VisitorSynchronization::kStrongRootList);
 
   isolate_->bootstrapper()->Iterate(v);
@@ -3834,10 +3789,10 @@ void Heap::IterateStrongRoots(RootVisitor* v, VisitMode mode) {
       isolate_->global_handles()->IterateNewSpaceStrongAndDependentRoots(v);
       break;
     case VISIT_ALL_IN_MINOR_MC_MARK:
-      // Global handles are processed manually be the minor MC.
+      // Global handles are processed manually by the minor MC.
       break;
     case VISIT_ALL_IN_MINOR_MC_UPDATE:
-      // Global handles are processed manually be the minor MC.
+      // Global handles are processed manually by the minor MC.
       break;
     case VISIT_ALL_IN_SWEEP_NEWSPACE:
     case VISIT_ALL:
@@ -3881,7 +3836,8 @@ void Heap::IterateWeakGlobalHandles(RootVisitor* v) {
 
 void Heap::IterateBuiltins(RootVisitor* v) {
   for (int i = 0; i < Builtins::builtin_count; i++) {
-    v->VisitRootPointer(Root::kBuiltins, Builtins::name(i), &builtins_[i]);
+    v->VisitRootPointer(Root::kBuiltins, Builtins::name(i),
+                        &builtins_table()[i]);
   }
 }
 
@@ -4349,7 +4305,7 @@ void Heap::SetUp() {
       new IncrementalMarking(this, mark_compact_collector_->marking_worklist(),
                              mark_compact_collector_->weak_objects());
 
-  if (FLAG_concurrent_marking) {
+  if (FLAG_concurrent_marking || FLAG_parallel_marking) {
     MarkCompactCollector::MarkingWorklist* marking_worklist =
         mark_compact_collector_->marking_worklist();
     concurrent_marking_ = new ConcurrentMarking(
@@ -4393,7 +4349,6 @@ void Heap::SetUp() {
     live_object_stats_ = new ObjectStats(this);
     dead_object_stats_ = new ObjectStats(this);
   }
-  scavenge_job_ = new ScavengeJob();
   local_embedder_heap_tracer_ = new LocalEmbedderHeapTracer(isolate());
 
   LOG(isolate_, IntPtrTEvent("heap-capacity", Capacity()));
@@ -4408,9 +4363,12 @@ void Heap::SetUp() {
   }
 #endif  // ENABLE_MINOR_MC
 
-  idle_scavenge_observer_ = new IdleScavengeObserver(
-      *this, ScavengeJob::kBytesAllocatedBeforeNextIdleTask);
-  new_space()->AddAllocationObserver(idle_scavenge_observer_);
+  if (FLAG_idle_time_scavenge) {
+    scavenge_job_ = new ScavengeJob();
+    idle_scavenge_observer_ = new IdleScavengeObserver(
+        *this, ScavengeJob::kBytesAllocatedBeforeNextIdleTask);
+    new_space()->AddAllocationObserver(idle_scavenge_observer_);
+  }
 
   SetGetExternallyAllocatedMemoryInBytesCallback(
       DefaultGetExternallyAllocatedMemoryInBytesCallback);
@@ -4428,7 +4386,7 @@ void Heap::SetUp() {
 
   write_protect_code_memory_ = FLAG_write_protect_code_memory;
 
-  external_reference_table_.Init(isolate_);
+  isolate_data_.external_reference_table()->Init(isolate_);
 }
 
 void Heap::InitializeHashSeed() {
@@ -4450,15 +4408,15 @@ void Heap::SetStackLimits() {
 
   // Set up the special root array entries containing the stack limits.
   // These are actually addresses, but the tag makes the GC ignore it.
-  roots_[RootIndex::kStackLimit] = reinterpret_cast<Object*>(
+  roots_table()[RootIndex::kStackLimit] = reinterpret_cast<Object*>(
       (isolate_->stack_guard()->jslimit() & ~kSmiTagMask) | kSmiTag);
-  roots_[RootIndex::kRealStackLimit] = reinterpret_cast<Object*>(
+  roots_table()[RootIndex::kRealStackLimit] = reinterpret_cast<Object*>(
       (isolate_->stack_guard()->real_jslimit() & ~kSmiTagMask) | kSmiTag);
 }
 
 void Heap::ClearStackLimits() {
-  roots_[RootIndex::kStackLimit] = Smi::kZero;
-  roots_[RootIndex::kRealStackLimit] = Smi::kZero;
+  roots_table()[RootIndex::kStackLimit] = Smi::kZero;
+  roots_table()[RootIndex::kRealStackLimit] = Smi::kZero;
 }
 
 int Heap::NextAllocationTimeout(int current_timeout) {
@@ -4532,11 +4490,12 @@ void Heap::TracePossibleWrapper(JSObject* js_object) {
   }
 }
 
-void Heap::RegisterExternallyReferencedObject(Object** object) {
+void Heap::RegisterExternallyReferencedObject(Address* location) {
   // The embedder is not aware of whether numbers are materialized as heap
   // objects are just passed around as Smis.
-  if (!(*object)->IsHeapObject()) return;
-  HeapObject* heap_object = HeapObject::cast(*object);
+  Object* object = *reinterpret_cast<Object**>(location);
+  if (!object->IsHeapObject()) return;
+  HeapObject* heap_object = HeapObject::cast(object);
   DCHECK(Contains(heap_object));
   if (FLAG_incremental_marking_wrappers && incremental_marking()->IsMarking()) {
     incremental_marking()->WhiteToGreyAndPush(heap_object);
@@ -4546,10 +4505,7 @@ void Heap::RegisterExternallyReferencedObject(Object** object) {
   }
 }
 
-void Heap::StartTearDown() {
-  SetGCState(TEAR_DOWN);
-  isolate_->global_handles()->TearDown();
-}
+void Heap::StartTearDown() { SetGCState(TEAR_DOWN); }
 
 void Heap::TearDown() {
   DCHECK_EQ(gc_state_, TEAR_DOWN);
@@ -4574,9 +4530,13 @@ void Heap::TearDown() {
     }
   }
 
-  new_space()->RemoveAllocationObserver(idle_scavenge_observer_);
-  delete idle_scavenge_observer_;
-  idle_scavenge_observer_ = nullptr;
+  if (FLAG_idle_time_scavenge) {
+    new_space()->RemoveAllocationObserver(idle_scavenge_observer_);
+    delete idle_scavenge_observer_;
+    idle_scavenge_observer_ = nullptr;
+    delete scavenge_job_;
+    scavenge_job_ = nullptr;
+  }
 
   if (FLAG_stress_marking > 0) {
     RemoveAllocationObserversFromAllSpaces(stress_marking_observer_,
@@ -4647,8 +4607,7 @@ void Heap::TearDown() {
   delete local_embedder_heap_tracer_;
   local_embedder_heap_tracer_ = nullptr;
 
-  delete scavenge_job_;
-  scavenge_job_ = nullptr;
+  isolate_->global_handles()->TearDown();
 
   external_string_table_.TearDown();
 
@@ -5073,8 +5032,7 @@ class UnreachableObjectsFilter : public HeapObjectsFilter {
 
 HeapIterator::HeapIterator(Heap* heap,
                            HeapIterator::HeapObjectsFiltering filtering)
-    : no_heap_allocation_(),
-      heap_(heap),
+    : heap_(heap),
       filtering_(filtering),
       filter_(nullptr),
       space_iterator_(nullptr),

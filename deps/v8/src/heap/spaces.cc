@@ -98,7 +98,7 @@ static base::LazyInstance<CodeRangeAddressHint>::type code_range_address_hint =
     LAZY_INSTANCE_INITIALIZER;
 
 Address CodeRangeAddressHint::GetAddressHint(size_t code_range_size) {
-  base::LockGuard<base::Mutex> guard(&mutex_);
+  base::MutexGuard guard(&mutex_);
   auto it = recently_freed_.find(code_range_size);
   if (it == recently_freed_.end() || it->second.empty()) {
     return reinterpret_cast<Address>(GetRandomMmapAddr());
@@ -110,7 +110,7 @@ Address CodeRangeAddressHint::GetAddressHint(size_t code_range_size) {
 
 void CodeRangeAddressHint::NotifyFreedCodeRange(Address code_range_start,
                                                 size_t code_range_size) {
-  base::LockGuard<base::Mutex> guard(&mutex_);
+  base::MutexGuard guard(&mutex_);
   recently_freed_[code_range_size].push_back(code_range_start);
 }
 
@@ -361,7 +361,7 @@ void MemoryAllocator::Unmapper::TearDown() {
 }
 
 int MemoryAllocator::Unmapper::NumberOfChunks() {
-  base::LockGuard<base::Mutex> guard(&mutex_);
+  base::MutexGuard guard(&mutex_);
   size_t result = 0;
   for (int i = 0; i < kNumberOfChunkQueues; i++) {
     result += chunks_[i].size();
@@ -370,7 +370,7 @@ int MemoryAllocator::Unmapper::NumberOfChunks() {
 }
 
 size_t MemoryAllocator::Unmapper::CommittedBufferedMemory() {
-  base::LockGuard<base::Mutex> guard(&mutex_);
+  base::MutexGuard guard(&mutex_);
 
   size_t sum = 0;
   // kPooled chunks are already uncommited. We only have to account for
@@ -468,7 +468,7 @@ void MemoryChunk::SetReadAndExecutable() {
   DCHECK(owner()->identity() == CODE_SPACE || owner()->identity() == LO_SPACE);
   // Decrementing the write_unprotect_counter_ and changing the page
   // protection mode has to be atomic.
-  base::LockGuard<base::Mutex> guard(page_protection_change_mutex_);
+  base::MutexGuard guard(page_protection_change_mutex_);
   if (write_unprotect_counter_ == 0) {
     // This is a corner case that may happen when we have a
     // CodeSpaceMemoryModificationScope open and this page was newly
@@ -481,7 +481,7 @@ void MemoryChunk::SetReadAndExecutable() {
     Address protect_start =
         address() + MemoryAllocator::CodePageAreaStartOffset();
     size_t page_size = MemoryAllocator::GetCommitPageSize();
-    DCHECK(IsAddressAligned(protect_start, page_size));
+    DCHECK(IsAligned(protect_start, page_size));
     size_t protect_size = RoundUp(area_size(), page_size);
     CHECK(reservation_.SetPermissions(protect_start, protect_size,
                                       PageAllocator::kReadExecute));
@@ -493,14 +493,14 @@ void MemoryChunk::SetReadAndWritable() {
   DCHECK(owner()->identity() == CODE_SPACE || owner()->identity() == LO_SPACE);
   // Incrementing the write_unprotect_counter_ and changing the page
   // protection mode has to be atomic.
-  base::LockGuard<base::Mutex> guard(page_protection_change_mutex_);
+  base::MutexGuard guard(page_protection_change_mutex_);
   write_unprotect_counter_++;
   DCHECK_LE(write_unprotect_counter_, kMaxWriteUnprotectCounter);
   if (write_unprotect_counter_ == 1) {
     Address unprotect_start =
         address() + MemoryAllocator::CodePageAreaStartOffset();
     size_t page_size = MemoryAllocator::GetCommitPageSize();
-    DCHECK(IsAddressAligned(unprotect_start, page_size));
+    DCHECK(IsAligned(unprotect_start, page_size));
     size_t unprotect_size = RoundUp(area_size(), page_size);
     CHECK(reservation_.SetPermissions(unprotect_start, unprotect_size,
                                       PageAllocator::kReadWrite));
@@ -539,6 +539,7 @@ MemoryChunk* MemoryChunk::Initialize(Heap* heap, Address base, size_t size,
   chunk->allocated_bytes_ = chunk->area_size();
   chunk->wasted_memory_ = 0;
   chunk->young_generation_bitmap_ = nullptr;
+  chunk->marking_bitmap_ = nullptr;
   chunk->local_tracker_ = nullptr;
 
   chunk->external_backing_store_bytes_[ExternalBackingStoreType::kArrayBuffer] =
@@ -550,14 +551,15 @@ MemoryChunk* MemoryChunk::Initialize(Heap* heap, Address base, size_t size,
     chunk->categories_[i] = nullptr;
   }
 
+  chunk->AllocateMarkingBitmap();
   if (owner->identity() == RO_SPACE) {
     heap->incremental_marking()
         ->non_atomic_marking_state()
         ->bitmap(chunk)
         ->MarkAllBits();
   } else {
-    heap->incremental_marking()->non_atomic_marking_state()->ClearLiveness(
-        chunk);
+    heap->incremental_marking()->non_atomic_marking_state()->SetLiveBytes(chunk,
+                                                                          0);
   }
 
   DCHECK_EQ(kFlagsOffset, OFFSET_OF(MemoryChunk, flags_));
@@ -569,7 +571,7 @@ MemoryChunk* MemoryChunk::Initialize(Heap* heap, Address base, size_t size,
           heap->code_space_memory_modification_scope_depth();
     } else {
       size_t page_size = MemoryAllocator::GetCommitPageSize();
-      DCHECK(IsAddressAligned(area_start, page_size));
+      DCHECK(IsAligned(area_start, page_size));
       size_t area_size = RoundUp(area_end - area_start, page_size);
       CHECK(reservation.SetPermissions(area_start, area_size,
                                        PageAllocator::kReadWriteExecute));
@@ -1132,7 +1134,7 @@ bool MemoryAllocator::CommitExecutableMemory(VirtualMemory* vm, Address start,
                                              size_t reserved_size) {
   const size_t page_size = GetCommitPageSize();
   // All addresses and sizes must be aligned to the commit page size.
-  DCHECK(IsAddressAligned(start, page_size));
+  DCHECK(IsAligned(start, page_size));
   DCHECK_EQ(0, commit_size % page_size);
   DCHECK_EQ(0, reserved_size % page_size);
   const size_t guard_size = CodePageGuardSize();
@@ -1189,6 +1191,7 @@ void MemoryChunk::ReleaseAllocatedMemory() {
   ReleaseInvalidatedSlots();
   if (local_tracker_ != nullptr) ReleaseLocalTracker();
   if (young_generation_bitmap_ != nullptr) ReleaseYoungGenerationBitmap();
+  if (marking_bitmap_ != nullptr) ReleaseMarkingBitmap();
 
   if (IsPagedSpace()) {
     Page* page = static_cast<Page*>(this);
@@ -1330,6 +1333,17 @@ void MemoryChunk::ReleaseYoungGenerationBitmap() {
   young_generation_bitmap_ = nullptr;
 }
 
+void MemoryChunk::AllocateMarkingBitmap() {
+  DCHECK_NULL(marking_bitmap_);
+  marking_bitmap_ = static_cast<Bitmap*>(calloc(1, Bitmap::kSize));
+}
+
+void MemoryChunk::ReleaseMarkingBitmap() {
+  DCHECK_NOT_NULL(marking_bitmap_);
+  free(marking_bitmap_);
+  marking_bitmap_ = nullptr;
+}
+
 // -----------------------------------------------------------------------------
 // PagedSpace implementation
 
@@ -1411,12 +1425,12 @@ void PagedSpace::RefillFreeList() {
       if (is_local()) {
         DCHECK_NE(this, p->owner());
         PagedSpace* owner = reinterpret_cast<PagedSpace*>(p->owner());
-        base::LockGuard<base::Mutex> guard(owner->mutex());
+        base::MutexGuard guard(owner->mutex());
         owner->RefineAllocatedBytesAfterSweeping(p);
         owner->RemovePage(p);
         added += AddPage(p);
       } else {
-        base::LockGuard<base::Mutex> guard(mutex());
+        base::MutexGuard guard(mutex());
         DCHECK_EQ(this, p->owner());
         RefineAllocatedBytesAfterSweeping(p);
         added += RelinkFreeListCategories(p);
@@ -1428,7 +1442,7 @@ void PagedSpace::RefillFreeList() {
 }
 
 void PagedSpace::MergeCompactionSpace(CompactionSpace* other) {
-  base::LockGuard<base::Mutex> guard(mutex());
+  base::MutexGuard guard(mutex());
 
   DCHECK(identity() == other->identity());
   // Unmerged fields:
@@ -1491,7 +1505,7 @@ void PagedSpace::RefineAllocatedBytesAfterSweeping(Page* page) {
 }
 
 Page* PagedSpace::RemovePageSafe(int size_in_bytes) {
-  base::LockGuard<base::Mutex> guard(mutex());
+  base::MutexGuard guard(mutex());
   // Check for pages that still contain free list entries. Bail out for smaller
   // categories.
   const int minimum_category =
@@ -1567,7 +1581,7 @@ void PagedSpace::ShrinkImmortalImmovablePages() {
 bool PagedSpace::Expand() {
   // Always lock against the main space as we can only adjust capacity and
   // pages concurrently for the main paged space.
-  base::LockGuard<base::Mutex> guard(heap()->paged_space(identity())->mutex());
+  base::MutexGuard guard(heap()->paged_space(identity())->mutex());
 
   const int size = AreaSize();
 
@@ -2195,7 +2209,7 @@ bool NewSpace::AddFreshPage() {
 
 
 bool NewSpace::AddFreshPageSynchronized() {
-  base::LockGuard<base::Mutex> guard(&mutex_);
+  base::MutexGuard guard(&mutex_);
   return AddFreshPage();
 }
 
@@ -2973,7 +2987,8 @@ size_t FreeListCategory::SumFreeList() {
   size_t sum = 0;
   FreeSpace* cur = top();
   while (cur != nullptr) {
-    DCHECK(cur->map() == page()->heap()->root(RootIndex::kFreeSpaceMap));
+    DCHECK_EQ(cur->map(),
+              page()->heap()->isolate()->root(RootIndex::kFreeSpaceMap));
     sum += cur->relaxed_read_size();
     cur = cur->next();
   }
@@ -3358,7 +3373,7 @@ Object* LargeObjectSpace::FindObject(Address a) {
 }
 
 LargePage* LargeObjectSpace::FindPageThreadSafe(Address a) {
-  base::LockGuard<base::Mutex> guard(&chunk_map_mutex_);
+  base::MutexGuard guard(&chunk_map_mutex_);
   return FindPage(a);
 }
 
@@ -3394,7 +3409,7 @@ void LargeObjectSpace::ClearMarkingStateOfLiveObjects() {
 void LargeObjectSpace::InsertChunkMapEntries(LargePage* page) {
   // There may be concurrent access on the chunk map. We have to take the lock
   // here.
-  base::LockGuard<base::Mutex> guard(&chunk_map_mutex_);
+  base::MutexGuard guard(&chunk_map_mutex_);
   for (Address current = reinterpret_cast<Address>(page);
        current < reinterpret_cast<Address>(page) + page->size();
        current += MemoryChunk::kPageSize) {

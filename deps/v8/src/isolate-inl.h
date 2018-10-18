@@ -7,13 +7,17 @@
 
 #include "src/isolate.h"
 #include "src/objects-inl.h"
+#include "src/objects/regexp-match-info.h"
 
 namespace v8 {
 namespace internal {
 
 base::AddressRegion Isolate::root_register_addressable_region() {
+  // TODO(ishell): limit this region to the IsolateData object once all the
+  // data is moved there.
   Address start = reinterpret_cast<Address>(this);
-  Address end = heap_.root_register_addressable_end();
+  Address end =
+      reinterpret_cast<Address>(heap_.isolate_data()) + sizeof(IsolateData);
   return base::AddressRegion(start, end - start);
 }
 
@@ -183,6 +187,16 @@ bool Isolate::IsArrayBufferNeuteringIntact() {
 bool Isolate::IsArrayIteratorLookupChainIntact() {
   PropertyCell* array_iterator_cell = heap()->array_iterator_protector();
   return array_iterator_cell->value() == Smi::FromInt(kProtectorValid);
+}
+
+bool Isolate::IsMapIteratorLookupChainIntact() {
+  PropertyCell* map_iterator_cell = heap()->map_iterator_protector();
+  return map_iterator_cell->value() == Smi::FromInt(kProtectorValid);
+}
+
+bool Isolate::IsSetIteratorLookupChainIntact() {
+  PropertyCell* set_iterator_cell = heap()->set_iterator_protector();
+  return set_iterator_cell->value() == Smi::FromInt(kProtectorValid);
 }
 
 bool Isolate::IsStringIteratorLookupChainIntact() {

@@ -246,6 +246,14 @@ class Immediate {
     return value_.immediate;
   }
 
+  bool is_embedded_object() const {
+    return !is_heap_object_request() && rmode() == RelocInfo::EMBEDDED_OBJECT;
+  }
+
+  Handle<HeapObject> embedded_object() const {
+    return Handle<HeapObject>(bit_cast<HeapObject**>(immediate()));
+  }
+
   bool is_external_reference() const {
     return rmode() == RelocInfo::EXTERNAL_REFERENCE;
   }
@@ -1801,6 +1809,10 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
   };
   typedef SetRootRegisterSupportScope<false> SupportsRootRegisterScope;
   typedef SetRootRegisterSupportScope<true> AllowExplicitEbxAccessScope;
+
+  void set_ebx_addressable(bool is_addressable) {
+    is_ebx_addressable_ = is_addressable;
+  }
 
  protected:
   void emit_sse_operand(XMMRegister reg, Operand adr);

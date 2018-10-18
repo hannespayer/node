@@ -38,7 +38,10 @@
 #include "src/objects/js-regexp-string-iterator-inl.h"
 #ifdef V8_INTL_SUPPORT
 #include "src/objects/js-relative-time-format-inl.h"
+#include "src/objects/js-segment-iterator-inl.h"
+#include "src/objects/js-segmenter-inl.h"
 #endif  // V8_INTL_SUPPORT
+#include "src/objects/js-weak-refs-inl.h"
 #include "src/objects/literal-objects-inl.h"
 #include "src/objects/microtask-inl.h"
 #include "src/objects/microtask-queue-inl.h"
@@ -191,6 +194,7 @@ void HeapObject::HeapObjectPrint(std::ostream& os) {  // NOLINT
     case JS_API_OBJECT_TYPE:
     case JS_SPECIAL_API_OBJECT_TYPE:
     case JS_CONTEXT_EXTENSION_OBJECT_TYPE:
+    case JS_ASYNC_FUNCTION_OBJECT_TYPE:
     case JS_ASYNC_GENERATOR_OBJECT_TYPE:
     case JS_ARGUMENTS_TYPE:
     case JS_ERROR_TYPE:
@@ -267,6 +271,16 @@ void HeapObject::HeapObjectPrint(std::ostream& os) {  // NOLINT
     case JS_MAP_VALUE_ITERATOR_TYPE:
       JSMapIterator::cast(this)->JSMapIteratorPrint(os);
       break;
+    case JS_WEAK_CELL_TYPE:
+      JSWeakCell::cast(this)->JSWeakCellPrint(os);
+      break;
+    case JS_WEAK_FACTORY_TYPE:
+      JSWeakFactory::cast(this)->JSWeakFactoryPrint(os);
+      break;
+    case JS_WEAK_FACTORY_CLEANUP_ITERATOR_TYPE:
+      JSWeakFactoryCleanupIterator::cast(this)
+          ->JSWeakFactoryCleanupIteratorPrint(os);
+      break;
     case JS_WEAK_MAP_TYPE:
       JSWeakMap::cast(this)->JSWeakMapPrint(os);
       break;
@@ -342,6 +356,12 @@ void HeapObject::HeapObjectPrint(std::ostream& os) {  // NOLINT
     case JS_INTL_RELATIVE_TIME_FORMAT_TYPE:
       JSRelativeTimeFormat::cast(this)->JSRelativeTimeFormatPrint(os);
       break;
+    case JS_INTL_SEGMENT_ITERATOR_TYPE:
+      JSSegmentIterator::cast(this)->JSSegmentIteratorPrint(os);
+      break;
+    case JS_INTL_SEGMENTER_TYPE:
+      JSSegmenter::cast(this)->JSSegmenterPrint(os);
+      break;
 #endif  // V8_INTL_SUPPORT
 #define MAKE_STRUCT_CASE(TYPE, Name, name) \
   case TYPE:                               \
@@ -405,7 +425,8 @@ void HeapObject::HeapObjectPrint(std::ostream& os) {  // NOLINT
 }
 
 void ByteArray::ByteArrayPrint(std::ostream& os) {  // NOLINT
-  os << "byte array, data starts at " << GetDataStartAddress();
+  os << "byte array, data starts at "
+     << static_cast<void*>(GetDataStartAddress());
 }
 
 void BytecodeArray::BytecodeArrayPrint(std::ostream& os) {  // NOLINT
@@ -1143,7 +1164,7 @@ void JSValue::JSValuePrint(std::ostream& os) {  // NOLINT
 
 void JSMessageObject::JSMessageObjectPrint(std::ostream& os) {  // NOLINT
   JSObjectPrintHeader(os, this, "JSMessageObject");
-  os << "\n - type: " << type();
+  os << "\n - type: " << static_cast<int>(type());
   os << "\n - arguments: " << Brief(argument());
   os << "\n - start_position: " << start_position();
   os << "\n - end_position: " << end_position();
@@ -1256,6 +1277,31 @@ void JSSetIterator::JSSetIteratorPrint(std::ostream& os) {  // NOLINT
 void JSMapIterator::JSMapIteratorPrint(std::ostream& os) {  // NOLINT
   JSObjectPrintHeader(os, this, "JSMapIterator");
   JSCollectionIteratorPrint(os);
+}
+
+void JSWeakCell::JSWeakCellPrint(std::ostream& os) {
+  JSObjectPrintHeader(os, this, "JSWeakCell");
+  os << "\n - factory: " << Brief(factory());
+  os << "\n - target: " << Brief(target());
+  os << "\n - holdings: " << Brief(holdings());
+  os << "\n - prev: " << Brief(prev());
+  os << "\n - next: " << Brief(next());
+  os << "\n";
+}
+
+void JSWeakFactory::JSWeakFactoryPrint(std::ostream& os) {
+  JSObjectPrintHeader(os, this, "JSWeakFactory");
+  os << "\n - cleanup: " << Brief(cleanup());
+  os << "\n - active_cells: " << Brief(active_cells());
+  os << "\n - cleared_cells: " << Brief(cleared_cells());
+  os << "\n";
+}
+
+void JSWeakFactoryCleanupIterator::JSWeakFactoryCleanupIteratorPrint(
+    std::ostream& os) {
+  JSObjectPrintHeader(os, this, "JSWeakFactoryCleanupIterator");
+  os << "\n - factory: " << Brief(factory());
+  os << "\n";
 }
 
 void JSWeakMap::JSWeakMapPrint(std::ostream& os) {  // NOLINT
@@ -1725,13 +1771,10 @@ void WasmInstanceObject::WasmInstanceObjectPrint(std::ostream& os) {  // NOLINT
   if (has_table_object()) {
     os << "\n - table_object: " << Brief(table_object());
   }
-  os << "\n - imported_function_instances: "
-     << Brief(imported_function_instances());
-  os << "\n - imported_function_callables: "
-     << Brief(imported_function_callables());
-  if (has_indirect_function_table_instances()) {
-    os << "\n - indirect_function_table_instances: "
-       << Brief(indirect_function_table_instances());
+  os << "\n - imported_function_refs: " << Brief(imported_function_refs());
+  if (has_indirect_function_table_refs()) {
+    os << "\n - indirect_function_table_refs: "
+       << Brief(indirect_function_table_refs());
   }
   if (has_managed_native_allocations()) {
     os << "\n - managed_native_allocations: "
@@ -1994,10 +2037,10 @@ void JSLocale::JSLocalePrint(std::ostream& os) {  // NOLINT
   os << "\n - baseName: " << Brief(base_name());
   os << "\n - locale: " << Brief(locale());
   os << "\n - calendar: " << Brief(calendar());
-  os << "\n - caseFirst: " << Brief(case_first());
+  os << "\n - caseFirst: " << CaseFirstAsString();
   os << "\n - collation: " << Brief(collation());
-  os << "\n - hourCycle: " << Brief(hour_cycle());
-  os << "\n - numeric: " << Brief(numeric());
+  os << "\n - hourCycle: " << HourCycleAsString();
+  os << "\n - numeric: " << NumericAsString();
   os << "\n - numberingSystem: " << Brief(numbering_system());
   os << "\n";
 }
@@ -2029,6 +2072,23 @@ void JSRelativeTimeFormat::JSRelativeTimeFormatPrint(
   os << "\n - style: " << StyleAsString();
   os << "\n - numeric: " << NumericAsString();
   os << "\n - icu formatter: " << Brief(icu_formatter());
+  os << "\n";
+}
+
+void JSSegmentIterator::JSSegmentIteratorPrint(std::ostream& os) {  // NOLINT
+  JSObjectPrintHeader(os, this, "JSSegmentIterator");
+  os << "\n - icu break iterator: " << Brief(icu_break_iterator());
+  os << "\n - unicode string: " << Brief(unicode_string());
+  os << "\n - granularity: " << GranularityAsString();
+  os << "\n";
+}
+
+void JSSegmenter::JSSegmenterPrint(std::ostream& os) {  // NOLINT
+  JSObjectPrintHeader(os, this, "JSSegmenter");
+  os << "\n - locale: " << Brief(locale());
+  os << "\n - granularity: " << GranularityAsString();
+  os << "\n - lineBreakStyle: " << LineBreakStyleAsString();
+  os << "\n - icu break iterator: " << Brief(icu_break_iterator());
   os << "\n";
 }
 #endif  // V8_INTL_SUPPORT

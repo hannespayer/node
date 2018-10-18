@@ -128,6 +128,9 @@
   'test-serialize/SnapshotCreatorNoExternalReferencesCustomFail1': [FAIL],
   'test-serialize/SnapshotCreatorNoExternalReferencesCustomFail2': [FAIL],
 
+  # BUG(v8:8296). Flaky OOM test.
+  'test-heap/OutOfMemorySmallObjects': [SKIP],
+
   ############################################################################
   # Slow tests.
   'test-debug/CallFunctionInDebugger': [PASS, ['mode == debug', SLOW]],
@@ -297,10 +300,6 @@
 ['arch == arm and not simulator_run', {
   # crbug.com/v8/7605
   'test-heap/OutOfMemorySmallObjects': [SKIP],
-
-  # BUG(v8:8201).
-  'test-run-wasm-atomics/*': [SKIP],
-  'test-run-wasm-atomics64/*': [SKIP],
 }],  # 'arch == arm and not simulator_run'
 
 ##############################################################################
@@ -356,11 +355,10 @@
 }],  # '(arch == mipsel or arch == mips64el or arch == mips or arch == mips64) and not simd_mips'
 
 ##############################################################################
-['arch == mipsel or arch == mips64el or arch == mips or arch == mips64 or arch == ppc or arch == ppc64 or arch == s390 or arch == s390x', {
+['arch == mipsel or arch == mips64el or arch == mips or arch == mips64', {
   # TODO(mips-team): Implement I64Atomic operations on MIPS
-  # TODO(ppc-team, s390-team): Implement I64Atomic operations on PPC/s390
   'test-run-wasm-atomics64/*': [SKIP],
-}],  # 'arch == mipsel or arch == mips64el or arch == mips or arch == mips64 or arch == ppc or arch == ppc64 or arch == s390 or arch == s390x'
+}],  # 'arch == mipsel or arch == mips64el or arch == mips or arch == mips64'
 
 ##############################################################################
 ['mips_arch_variant == r6', {

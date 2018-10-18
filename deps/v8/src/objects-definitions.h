@@ -185,6 +185,7 @@ namespace internal {
   V(JS_ARRAY_ITERATOR_TYPE)                                        \
   V(JS_ARRAY_TYPE)                                                 \
   V(JS_ASYNC_FROM_SYNC_ITERATOR_TYPE)                              \
+  V(JS_ASYNC_FUNCTION_OBJECT_TYPE)                                 \
   V(JS_ASYNC_GENERATOR_OBJECT_TYPE)                                \
   V(JS_CONTEXT_EXTENSION_OBJECT_TYPE)                              \
   V(JS_DATE_TYPE)                                                  \
@@ -202,6 +203,9 @@ namespace internal {
   V(JS_SET_KEY_VALUE_ITERATOR_TYPE)                                \
   V(JS_SET_VALUE_ITERATOR_TYPE)                                    \
   V(JS_STRING_ITERATOR_TYPE)                                       \
+  V(JS_WEAK_CELL_TYPE)                                             \
+  V(JS_WEAK_FACTORY_CLEANUP_ITERATOR_TYPE)                         \
+  V(JS_WEAK_FACTORY_TYPE)                                          \
   V(JS_WEAK_MAP_TYPE)                                              \
   V(JS_WEAK_SET_TYPE)                                              \
   V(JS_TYPED_ARRAY_TYPE)                                           \
@@ -228,6 +232,8 @@ namespace internal {
   V(JS_INTL_NUMBER_FORMAT_TYPE)        \
   V(JS_INTL_PLURAL_RULES_TYPE)         \
   V(JS_INTL_RELATIVE_TIME_FORMAT_TYPE) \
+  V(JS_INTL_SEGMENT_ITERATOR_TYPE)     \
+  V(JS_INTL_SEGMENTER_TYPE)            \
   INSTANCE_TYPE_LIST_AFTER_INTL(V)
 #else
 #define INSTANCE_TYPE_LIST(V)       \

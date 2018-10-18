@@ -73,6 +73,8 @@ class StatsCounter;
   V(address_of_double_neg_constant, "double_negate_constant")                 \
   V(address_of_float_abs_constant, "float_absolute_constant")                 \
   V(address_of_float_neg_constant, "float_negate_constant")                   \
+  V(address_of_harmony_await_optimization_flag,                               \
+    "FLAG_harmony_await_optimization")                                        \
   V(address_of_min_int, "LDoubleConstant::min_int")                           \
   V(address_of_one_half, "LDoubleConstant::one_half")                         \
   V(address_of_runtime_stats_flag, "FLAG_runtime_stats")                      \
@@ -99,18 +101,18 @@ class StatsCounter;
   V(ieee754_acosh_function, "base::ieee754::acosh")                           \
   V(ieee754_asin_function, "base::ieee754::asin")                             \
   V(ieee754_asinh_function, "base::ieee754::asinh")                           \
-  V(ieee754_atan2_function, "base::ieee754::atan2")                           \
   V(ieee754_atan_function, "base::ieee754::atan")                             \
+  V(ieee754_atan2_function, "base::ieee754::atan2")                           \
   V(ieee754_atanh_function, "base::ieee754::atanh")                           \
   V(ieee754_cbrt_function, "base::ieee754::cbrt")                             \
   V(ieee754_cos_function, "base::ieee754::cos")                               \
   V(ieee754_cosh_function, "base::ieee754::cosh")                             \
   V(ieee754_exp_function, "base::ieee754::exp")                               \
   V(ieee754_expm1_function, "base::ieee754::expm1")                           \
+  V(ieee754_log_function, "base::ieee754::log")                               \
   V(ieee754_log10_function, "base::ieee754::log10")                           \
   V(ieee754_log1p_function, "base::ieee754::log1p")                           \
   V(ieee754_log2_function, "base::ieee754::log2")                             \
-  V(ieee754_log_function, "base::ieee754::log")                               \
   V(ieee754_sin_function, "base::ieee754::sin")                               \
   V(ieee754_sinh_function, "base::ieee754::sinh")                             \
   V(ieee754_tan_function, "base::ieee754::tan")                               \
@@ -121,6 +123,8 @@ class StatsCounter;
     "JSObject::InvalidatePrototypeChains()")                                  \
   V(invoke_accessor_getter_callback, "InvokeAccessorGetterCallback")          \
   V(invoke_function_callback, "InvokeFunctionCallback")                       \
+  V(jsarray_array_join_concat_to_sequential_string,                           \
+    "jsarray_array_join_concat_to_sequential_string")                         \
   V(jsreceiver_create_identity_hash, "jsreceiver_create_identity_hash")       \
   V(libc_memchr_function, "libc_memchr")                                      \
   V(libc_memcpy_function, "libc_memcpy")                                      \
@@ -134,13 +138,13 @@ class StatsCounter;
   V(power_double_double_function, "power_double_double_function")             \
   V(printf_function, "printf")                                                \
   V(refill_math_random, "MathRandom::RefillCache")                            \
-  V(store_buffer_overflow_function, "StoreBuffer::StoreBufferOverflow")       \
   V(search_string_raw_one_one, "search_string_raw_one_one")                   \
   V(search_string_raw_one_two, "search_string_raw_one_two")                   \
   V(search_string_raw_two_one, "search_string_raw_two_one")                   \
   V(search_string_raw_two_two, "search_string_raw_two_two")                   \
-  V(try_internalize_string_function, "try_internalize_string_function")       \
   V(smi_lexicographic_compare_function, "smi_lexicographic_compare_function") \
+  V(store_buffer_overflow_function, "StoreBuffer::StoreBufferOverflow")       \
+  V(try_internalize_string_function, "try_internalize_string_function")       \
   V(wasm_call_trap_callback_for_testing,                                      \
     "wasm::call_trap_callback_for_testing")                                   \
   V(wasm_f32_ceil, "wasm::f32_ceil_wrapper")                                  \

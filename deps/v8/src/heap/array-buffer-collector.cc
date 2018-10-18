@@ -28,13 +28,13 @@ void ArrayBufferCollector::QueueOrFreeGarbageAllocations(
   if (heap_->ShouldReduceMemory()) {
     FreeAllocationsHelper(heap_, allocations);
   } else {
-    base::LockGuard<base::Mutex> guard(&allocations_mutex_);
+    base::MutexGuard guard(&allocations_mutex_);
     allocations_.push_back(std::move(allocations));
   }
 }
 
 void ArrayBufferCollector::PerformFreeAllocations() {
-  base::LockGuard<base::Mutex> guard(&allocations_mutex_);
+  base::MutexGuard guard(&allocations_mutex_);
   for (const std::vector<JSArrayBuffer::Allocation>& allocations :
        allocations_) {
     FreeAllocationsHelper(heap_, allocations);
@@ -42,31 +42,18 @@ void ArrayBufferCollector::PerformFreeAllocations() {
   allocations_.clear();
 }
 
-class ArrayBufferCollector::FreeingTask final : public CancelableTask {
- public:
-  explicit FreeingTask(Heap* heap)
-      : CancelableTask(heap->isolate()), heap_(heap) {}
-
-  ~FreeingTask() override = default;
-
- private:
-  void RunInternal() final {
-    TRACE_BACKGROUND_GC(
-        heap_->tracer(),
-        GCTracer::BackgroundScope::BACKGROUND_ARRAY_BUFFER_FREE);
-    heap_->array_buffer_collector()->PerformFreeAllocations();
-  }
-
-  Heap* heap_;
-};
-
 void ArrayBufferCollector::FreeAllocations() {
   // TODO(wez): Remove backing-store from external memory accounting.
   heap_->account_external_memory_concurrently_freed();
   if (!heap_->IsTearingDown() && !heap_->ShouldReduceMemory() &&
       FLAG_concurrent_array_buffer_freeing) {
     V8::GetCurrentPlatform()->CallOnWorkerThread(
-        base::make_unique<FreeingTask>(heap_));
+        MakeCancelableLambdaTask(heap_->isolate(), [this] {
+          TRACE_BACKGROUND_GC(
+              heap_->tracer(),
+              GCTracer::BackgroundScope::BACKGROUND_ARRAY_BUFFER_FREE);
+          PerformFreeAllocations();
+        }));
   } else {
     // Fallback for when concurrency is disabled/restricted. This is e.g. the
     // case when the GC should reduce memory. For such GCs the

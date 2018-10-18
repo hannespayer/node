@@ -224,7 +224,7 @@ class JSReceiver : public HeapObject, public NeverReadOnlySpaceObject {
 
   // Retrieves a permanent object identity hash code. The undefined value might
   // be returned in case no hash was created yet.
-  Object* GetIdentityHash(Isolate* isolate);
+  Object* GetIdentityHash();
 
   // Retrieves a permanent object identity hash code. May create and store a
   // hash code if needed and none exists.
@@ -1291,8 +1291,8 @@ class JSDate : public JSObject {
 class JSMessageObject : public JSObject {
  public:
   // [type]: the type of error message.
-  inline int type() const;
-  inline void set_type(int value);
+  inline MessageTemplate type() const;
+  inline void set_type(MessageTemplate value);
 
   // [arguments]: the arguments for formatting the error message.
   DECL_ACCESSORS(argument, Object)

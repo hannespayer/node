@@ -664,15 +664,15 @@ void EmitWordLoadPoisoningIfNeeded(CodeGenerator* codegen, Instruction* instr,
     __ bne(&exchange, cr0);                                             \
   } while (0)
 
-#define ASSEMBLE_ATOMIC_BINOP(bin_inst, load_inst, store_inst)                 \
-  do {                                                                         \
-    MemOperand operand = MemOperand(i.InputRegister(0), i.InputRegister(1));   \
-    Label binop;                                                               \
-    __ bind(&binop);                                                           \
-    __ load_inst(i.OutputRegister(), operand);                                 \
-    __ bin_inst(i.InputRegister(2), i.OutputRegister(), i.InputRegister(2));   \
-    __ store_inst(i.InputRegister(2), operand);                                \
-    __ bne(&binop, cr0);                                                       \
+#define ASSEMBLE_ATOMIC_BINOP(bin_inst, load_inst, store_inst)               \
+  do {                                                                       \
+    MemOperand operand = MemOperand(i.InputRegister(0), i.InputRegister(1)); \
+    Label binop;                                                             \
+    __ bind(&binop);                                                         \
+    __ load_inst(i.OutputRegister(), operand);                               \
+    __ bin_inst(kScratchReg, i.OutputRegister(), i.InputRegister(2));        \
+    __ store_inst(kScratchReg, operand);                                     \
+    __ bne(&binop, cr0);                                                     \
   } while (false)
 
 #define ASSEMBLE_ATOMIC_BINOP_SIGN_EXT(bin_inst, load_inst,                    \
@@ -2395,6 +2395,16 @@ void CodeGenerator::AssembleConstructFrame() {
       // efficient intialization of the constant pool pointer register).
       __ StubPrologue(type);
       if (call_descriptor->IsWasmFunctionCall()) {
+        __ Push(kWasmInstanceRegister);
+      } else if (call_descriptor->IsWasmImportWrapper()) {
+        // WASM import wrappers are passed a tuple in the place of the instance.
+        // Unpack the tuple into the instance and the target callable.
+        // This must be done here in the codegen because it cannot be expressed
+        // properly in the graph.
+        __ LoadP(kJSFunctionRegister,
+                 FieldMemOperand(kWasmInstanceRegister, Tuple2::kValue2Offset));
+        __ LoadP(kWasmInstanceRegister,
+                 FieldMemOperand(kWasmInstanceRegister, Tuple2::kValue1Offset));
         __ Push(kWasmInstanceRegister);
       }
     }

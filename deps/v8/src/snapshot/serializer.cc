@@ -139,6 +139,21 @@ void Serializer<AllocatorT>::PrintStack() {
 #endif  // DEBUG
 
 template <class AllocatorT>
+bool Serializer<AllocatorT>::SerializeRoot(HeapObject* obj,
+                                           HowToCode how_to_code,
+                                           WhereToPoint where_to_point,
+                                           int skip) {
+  RootIndex root_index;
+  // Derived serializers are responsible for determining if the root has
+  // actually been serialized before calling this.
+  if (root_index_map()->Lookup(obj, &root_index)) {
+    PutRoot(root_index, obj, how_to_code, where_to_point, skip);
+    return true;
+  }
+  return false;
+}
+
+template <class AllocatorT>
 bool Serializer<AllocatorT>::SerializeHotObject(HeapObject* obj,
                                                 HowToCode how_to_code,
                                                 WhereToPoint where_to_point,
@@ -597,7 +612,7 @@ class UnlinkWeakNextScope {
  private:
   HeapObject* object_;
   Object* next_;
-  DisallowHeapAllocation no_gc_;
+  DISALLOW_HEAP_ALLOCATION(no_gc_);
 };
 
 template <class AllocatorT>
@@ -743,7 +758,7 @@ void Serializer<AllocatorT>::ObjectSerializer::VisitPointers(
       if (current != start &&
           serializer_->root_index_map()->Lookup(current_contents,
                                                 &root_index) &&
-          Heap::RootIsImmortalImmovable(root_index) &&
+          RootsTable::IsImmortalImmovable(root_index) &&
           *current == current[-1]) {
         DCHECK_EQ(reference_type, HeapObjectReferenceType::STRONG);
         DCHECK(!Heap::InNewSpace(current_contents));

@@ -1519,7 +1519,8 @@ void TurboAssembler::CanonicalizeNaN(const VRegister& dst,
 void TurboAssembler::LoadRoot(Register destination, RootIndex index) {
   // TODO(jbramley): Most root values are constants, and can be synthesized
   // without a load. Refer to the ARM back end for details.
-  Ldr(destination, MemOperand(kRootRegister, RootRegisterOffset(index)));
+  Ldr(destination,
+      MemOperand(kRootRegister, RootRegisterOffsetForRootIndex(index)));
 }
 
 
@@ -1630,6 +1631,10 @@ void MacroAssembler::AssertGeneratorObject(Register object) {
   Label do_check;
   // Load instance type and check if JSGeneratorObject
   CompareInstanceType(temp, temp, JS_GENERATOR_OBJECT_TYPE);
+  B(eq, &do_check);
+
+  // Check if JSAsyncFunctionObject
+  Cmp(temp, JS_ASYNC_FUNCTION_OBJECT_TYPE);
   B(eq, &do_check);
 
   // Check if JSAsyncGeneratorObject
@@ -1805,8 +1810,7 @@ void TurboAssembler::CallCFunction(Register function, int num_of_reg_args,
 
 void TurboAssembler::LoadFromConstantsTable(Register destination,
                                             int constant_index) {
-  DCHECK(isolate()->heap()->RootCanBeTreatedAsConstant(
-      RootIndex::kBuiltinsConstantsTable));
+  DCHECK(RootsTable::IsImmortalImmovable(RootIndex::kBuiltinsConstantsTable));
   LoadRoot(destination, RootIndex::kBuiltinsConstantsTable);
   Ldr(destination,
       FieldMemOperand(destination,

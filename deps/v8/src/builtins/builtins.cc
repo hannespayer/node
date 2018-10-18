@@ -265,8 +265,11 @@ bool Builtins::IsLazy(int index) {
     case kArrayReduceRightPreLoopEagerDeoptContinuation:
     case kArraySomeLoopEagerDeoptContinuation:
     case kArraySomeLoopLazyDeoptContinuation:
-    case kAsyncGeneratorAwaitCaught:            // https://crbug.com/v8/6786.
-    case kAsyncGeneratorAwaitUncaught:          // https://crbug.com/v8/6786.
+    case kAsyncFunctionAwaitResolveClosure:   // https://crbug.com/v8/7522
+    case kAsyncGeneratorAwaitResolveClosure:  // https://crbug.com/v8/7522
+    case kAsyncGeneratorYieldResolveClosure:  // https://crbug.com/v8/7522
+    case kAsyncGeneratorAwaitCaught:          // https://crbug.com/v8/6786.
+    case kAsyncGeneratorAwaitUncaught:        // https://crbug.com/v8/6786.
     // CEntry variants must be immovable, whereas lazy deserialization allocates
     // movable code.
     case kCEntry_Return1_DontSaveFPRegs_ArgvOnStack_NoBuiltinExit:
@@ -324,7 +327,6 @@ bool Builtins::IsLazyDeserializer(Code* code) {
 // static
 bool Builtins::IsIsolateIndependent(int index) {
   DCHECK(IsBuiltinId(index));
-#ifndef V8_TARGET_ARCH_IA32
   switch (index) {
     // TODO(jgruber): There's currently two blockers for moving
     // InterpreterEntryTrampoline into the binary:
@@ -343,24 +345,6 @@ bool Builtins::IsIsolateIndependent(int index) {
     default:
       return true;
   }
-#else   // V8_TARGET_ARCH_IA32
-  // TODO(jgruber, v8:6666): Implement support.
-  // ia32 is a work-in-progress. This will let us make builtins
-  // isolate-independent one-by-one.
-  switch (index) {
-    case kContinueToCodeStubBuiltin:
-    case kContinueToCodeStubBuiltinWithResult:
-    case kContinueToJavaScriptBuiltin:
-    case kContinueToJavaScriptBuiltinWithResult:
-    case kWasmAllocateHeapNumber:
-    case kWasmCallJavaScript:
-    case kWasmToNumber:
-    case kDoubleToI:
-      return true;
-    default:
-      return false;
-  }
-#endif  // V8_TARGET_ARCH_IA32
   UNREACHABLE();
 }
 

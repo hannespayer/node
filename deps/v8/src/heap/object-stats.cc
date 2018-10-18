@@ -272,7 +272,7 @@ void ObjectStats::Dump(std::stringstream& stream) {
 }
 
 void ObjectStats::CheckpointObjectStats() {
-  base::LockGuard<base::Mutex> lock_guard(object_stats_mutex.Pointer());
+  base::MutexGuard lock_guard(object_stats_mutex.Pointer());
   MemCopy(object_counts_last_time_, object_counts_, sizeof(object_counts_));
   MemCopy(object_sizes_last_time_, object_sizes_, sizeof(object_sizes_));
   ClearObjectStats();
@@ -750,7 +750,7 @@ bool ObjectStatsCollectorImpl::CanRecordFixedArray(FixedArrayBase* array) {
   return array != roots.empty_fixed_array() &&
          array != roots.empty_sloppy_arguments_elements() &&
          array != roots.empty_slow_element_dictionary() &&
-         array != heap_->empty_property_dictionary();
+         array != roots.empty_property_dictionary();
 }
 
 bool ObjectStatsCollectorImpl::IsCowArray(FixedArrayBase* array) {
@@ -892,6 +892,8 @@ void ObjectStatsCollectorImpl::RecordVirtualBytecodeArrayDetails(
   RecordSimpleVirtualObjectStats(
       bytecode, bytecode->handler_table(),
       ObjectStats::BYTECODE_ARRAY_HANDLER_TABLE_TYPE);
+  RecordSimpleVirtualObjectStats(bytecode, bytecode->SourcePositionTable(),
+                                 ObjectStats::SOURCE_POSITION_TABLE_TYPE);
 }
 
 namespace {

@@ -459,9 +459,8 @@ bool CodeGenerator::IsMaterializableFromRoot(Handle<HeapObject> object,
   const CallDescriptor* incoming_descriptor =
       linkage()->GetIncomingDescriptor();
   if (incoming_descriptor->flags() & CallDescriptor::kCanUseRoots) {
-    Heap* heap = isolate()->heap();
-    return heap->IsRootHandle(object, index_return) &&
-           !heap->RootCanBeWrittenAfterInitialization(*index_return);
+    return isolate()->roots_table().IsRootHandle(object, index_return) &&
+           RootsTable::IsImmortalImmovable(*index_return);
   }
   return false;
 }
@@ -1034,7 +1033,7 @@ void CodeGenerator::BuildTranslationForFrameStateDescriptor(
       DCHECK(descriptor->bailout_id().IsValidForConstructStub());
       translation->BeginConstructStubFrame(
           descriptor->bailout_id(), shared_info_id,
-          static_cast<unsigned int>(descriptor->parameters_count()));
+          static_cast<unsigned int>(descriptor->parameters_count() + 1));
       break;
     case FrameStateType::kBuiltinContinuation: {
       BailoutId bailout_id = descriptor->bailout_id();

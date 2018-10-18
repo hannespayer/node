@@ -29,7 +29,7 @@ class WasmBuiltinsAssembler : public CodeStubAssembler {
                             kHeapObjectTag)));
     TNode<Code> target = UncheckedCast<Code>(Load(
         MachineType::TaggedPointer(), roots,
-        IntPtrConstant(Heap::roots_to_builtins_offset() + id * kPointerSize)));
+        IntPtrConstant(IsolateData::kBuiltinsTableOffset + id * kPointerSize)));
     return target;
   }
 
@@ -110,14 +110,15 @@ TF_BUILTIN(WasmGrowMemory, WasmBuiltinsAssembler) {
   ReturnRaw(Int32Constant(-1));
 }
 
-#define DECLARE_ENUM(name)                                                    \
-  TF_BUILTIN(ThrowWasm##name, WasmBuiltinsAssembler) {                        \
-    TNode<Object> instance = LoadInstanceFromFrame();                         \
-    TNode<Code> centry = LoadCEntryFromInstance(instance);                    \
-    TNode<Object> context = LoadContextFromInstance(instance);                \
-    int message_id = wasm::WasmOpcodes::TrapReasonToMessageId(wasm::k##name); \
-    TailCallRuntimeWithCEntry(Runtime::kThrowWasmError, centry, context,      \
-                              SmiConstant(message_id));                       \
+#define DECLARE_ENUM(name)                                                \
+  TF_BUILTIN(ThrowWasm##name, WasmBuiltinsAssembler) {                    \
+    TNode<Object> instance = LoadInstanceFromFrame();                     \
+    TNode<Code> centry = LoadCEntryFromInstance(instance);                \
+    TNode<Object> context = LoadContextFromInstance(instance);            \
+    MessageTemplate message_id =                                          \
+        wasm::WasmOpcodes::TrapReasonToMessageId(wasm::k##name);          \
+    TailCallRuntimeWithCEntry(Runtime::kThrowWasmError, centry, context,  \
+                              SmiConstant(static_cast<int>(message_id))); \
   }
 FOREACH_WASM_TRAPREASON(DECLARE_ENUM)
 #undef DECLARE_ENUM

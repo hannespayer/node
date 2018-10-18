@@ -10,6 +10,7 @@
 #include "src/base/hashmap.h"
 #include "src/globals.h"
 #include "src/objects.h"
+#include "src/pointer-with-payload.h"
 #include "src/zone/zone.h"
 
 namespace v8 {
@@ -77,6 +78,13 @@ class SloppyBlockFunctionMap : public ZoneHashMap {
   int count_;
 };
 
+class Scope;
+
+template <>
+struct PointerWithPayloadTraits<Scope> {
+  static constexpr int value = 1;
+};
+
 // Global invariants after AST construction: Each reference (i.e. identifier)
 // to a JavaScript variable (including global properties) is represented by a
 // VariableProxy node. Immediately after AST construction and before variable
@@ -120,12 +128,11 @@ class V8_EXPORT_PRIVATE Scope : public NON_EXPORTED_BASE(ZoneObject) {
     void Reparent(DeclarationScope* new_parent) const;
 
    private:
-    Scope* outer_scope_;
+    PointerWithPayload<Scope, bool, 1> outer_scope_and_calls_eval_;
     Scope* top_inner_scope_;
     VariableProxy* top_unresolved_;
     base::ThreadedList<Variable>::Iterator top_local_;
     base::ThreadedList<Declaration>::Iterator top_decl_;
-    const bool outer_scope_calls_eval_;
   };
 
   enum class DeserializationMode { kIncludingVariables, kScopesOnly };
@@ -723,13 +730,12 @@ class V8_EXPORT_PRIVATE DeclarationScope : public Scope {
   // Declare some special internal variables which must be accessible to
   // Ignition without ScopeInfo.
   Variable* DeclareGeneratorObjectVar(const AstRawString* name);
-  Variable* DeclarePromiseVar(const AstRawString* name);
 
   // Declare a parameter in this scope.  When there are duplicated
   // parameters the rightmost one 'wins'.  However, the implementation
   // expects all parameters to be declared and from left to right.
   Variable* DeclareParameter(const AstRawString* name, VariableMode mode,
-                             bool is_optional, bool is_rest, bool* is_duplicate,
+                             bool is_optional, bool is_rest,
                              AstValueFactory* ast_value_factory, int position);
 
   // Declares that a parameter with the name exists. Creates a Variable and
@@ -766,16 +772,12 @@ class V8_EXPORT_PRIVATE DeclarationScope : public Scope {
   // literals, or nullptr.  Only valid for function scopes.
   Variable* function_var() const { return function_; }
 
+  // The variable holding the JSGeneratorObject for generator, async
+  // and async generator functions, and modules. Only valid for
+  // function and module scopes.
   Variable* generator_object_var() const {
     DCHECK(is_function_scope() || is_module_scope());
     return GetRareVariable(RareVariable::kGeneratorObject);
-  }
-
-  Variable* promise_var() const {
-    DCHECK(is_function_scope());
-    DCHECK(IsAsyncFunction(function_kind_));
-    if (IsAsyncGeneratorFunction(function_kind_)) return nullptr;
-    return GetRareVariable(RareVariable::kPromise);
   }
 
   // Parameters. The left-most parameter has index 0.
@@ -952,9 +954,6 @@ class V8_EXPORT_PRIVATE DeclarationScope : public Scope {
 
   void SetDefaults();
 
-  // If the scope is a function scope, this is the function kind.
-  const FunctionKind function_kind_;
-
   bool has_simple_parameters_ : 1;
   // This scope contains an "use asm" annotation.
   bool asm_module_ : 1;
@@ -973,6 +972,9 @@ class V8_EXPORT_PRIVATE DeclarationScope : public Scope {
 #endif
   bool is_skipped_function_ : 1;
   bool has_inferred_function_name_ : 1;
+
+  // If the scope is a function scope, this is the function kind.
+  const FunctionKind function_kind_;
 
   // Parameter list in source order.
   ZonePtrList<Variable> params_;
@@ -997,14 +999,11 @@ class V8_EXPORT_PRIVATE DeclarationScope : public Scope {
     // Generator object, if any; generator function scopes and module scopes
     // only.
     Variable* generator_object = nullptr;
-    // Promise, if any; async function scopes only.
-    Variable* promise = nullptr;
   };
 
   enum class RareVariable {
     kThisFunction = offsetof(RareData, this_function),
     kGeneratorObject = offsetof(RareData, generator_object),
-    kPromise = offsetof(RareData, promise)
   };
 
   V8_INLINE RareData* EnsureRareData() {

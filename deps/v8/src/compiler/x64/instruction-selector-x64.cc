@@ -8,6 +8,7 @@
 #include "src/compiler/instruction-selector-impl.h"
 #include "src/compiler/node-matchers.h"
 #include "src/compiler/node-properties.h"
+#include "src/roots-inl.h"
 #include "src/turbo-assembler.h"
 
 namespace v8 {
@@ -1720,25 +1721,27 @@ void VisitWord64Compare(InstructionSelector* selector, Node* node,
                         FlagsContinuation* cont) {
   X64OperandGenerator g(selector);
   if (selector->CanUseRootsRegister()) {
-    Heap* const heap = selector->isolate()->heap();
+    const RootsTable& roots_table = selector->isolate()->roots_table();
     RootIndex root_index;
     HeapObjectBinopMatcher m(node);
     if (m.right().HasValue() &&
-        heap->IsRootHandle(m.right().Value(), &root_index)) {
+        roots_table.IsRootHandle(m.right().Value(), &root_index)) {
       if (!node->op()->HasProperty(Operator::kCommutative)) cont->Commute();
       InstructionCode opcode =
           kX64Cmp | AddressingModeField::encode(kMode_Root);
       return VisitCompare(
           selector, opcode,
-          g.TempImmediate(TurboAssemblerBase::RootRegisterOffset(root_index)),
+          g.TempImmediate(
+              TurboAssemblerBase::RootRegisterOffsetForRootIndex(root_index)),
           g.UseRegister(m.left().node()), cont);
     } else if (m.left().HasValue() &&
-               heap->IsRootHandle(m.left().Value(), &root_index)) {
+               roots_table.IsRootHandle(m.left().Value(), &root_index)) {
       InstructionCode opcode =
           kX64Cmp | AddressingModeField::encode(kMode_Root);
       return VisitCompare(
           selector, opcode,
-          g.TempImmediate(TurboAssemblerBase::RootRegisterOffset(root_index)),
+          g.TempImmediate(
+              TurboAssemblerBase::RootRegisterOffsetForRootIndex(root_index)),
           g.UseRegister(m.right().node()), cont);
     }
   }
@@ -1816,7 +1819,37 @@ void VisitCompareZero(InstructionSelector* selector, Node* user, Node* node,
         break;
     }
   }
-  VisitCompare(selector, opcode, g.Use(node), g.TempImmediate(0), cont);
+  int effect_level = selector->GetEffectLevel(node);
+  if (cont->IsBranch()) {
+    effect_level = selector->GetEffectLevel(
+        cont->true_block()->PredecessorAt(0)->control_input());
+  }
+  if (node->opcode() == IrOpcode::kLoad) {
+    switch (LoadRepresentationOf(node->op()).representation()) {
+      case MachineRepresentation::kWord8:
+        if (opcode == kX64Cmp32) {
+          opcode = kX64Cmp8;
+        } else if (opcode == kX64Test32) {
+          opcode = kX64Test8;
+        }
+        break;
+      case MachineRepresentation::kWord16:
+        if (opcode == kX64Cmp32) {
+          opcode = kX64Cmp16;
+        } else if (opcode == kX64Test32) {
+          opcode = kX64Test16;
+        }
+        break;
+      default:
+        break;
+    }
+  }
+  if (g.CanBeMemoryOperand(opcode, user, node, effect_level)) {
+    VisitCompareWithMemoryOperand(selector, opcode, node, g.TempImmediate(0),
+                                  cont);
+  } else {
+    VisitCompare(selector, opcode, g.Use(node), g.TempImmediate(0), cont);
+  }
 }
 
 

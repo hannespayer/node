@@ -39,10 +39,6 @@
 #include "unicode/uvernum.h"
 #include "unicode/uversion.h"
 
-#if U_ICU_VERSION_MAJOR_NUM >= 59
-#include "unicode/char16ptr.h"
-#endif
-
 namespace v8 {
 namespace internal {
 
@@ -75,26 +71,24 @@ MaybeHandle<JSObject> Intl::CachedOrNewService(
   return Handle<JSObject>::cast(result);
 }
 
-icu::Locale Intl::CreateICULocale(Isolate* isolate,
-                                  Handle<String> bcp47_locale_str) {
-  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
-  v8::String::Utf8Value bcp47_locale(v8_isolate,
-                                     v8::Utils::ToLocal(bcp47_locale_str));
-  CHECK_NOT_NULL(*bcp47_locale);
-
+icu::Locale Intl::CreateICULocale(const std::string& bcp47_locale) {
   DisallowHeapAllocation no_gc;
 
   // Convert BCP47 into ICU locale format.
   UErrorCode status = U_ZERO_ERROR;
   char icu_result[ULOC_FULLNAME_CAPACITY];
-  int icu_length = 0;
+  int parsed_length = 0;
 
   // bcp47_locale_str should be a canonicalized language tag, which
   // means this shouldn't fail.
-  uloc_forLanguageTag(*bcp47_locale, icu_result, ULOC_FULLNAME_CAPACITY,
-                      &icu_length, &status);
+  uloc_forLanguageTag(bcp47_locale.c_str(), icu_result, ULOC_FULLNAME_CAPACITY,
+                      &parsed_length, &status);
   CHECK(U_SUCCESS(status));
-  CHECK_LT(0, icu_length);
+
+  // bcp47_locale is already checked for its structural validity
+  // so that it should be parsed completely.
+  size_t bcp47_length = bcp47_locale.length();
+  CHECK_EQ(bcp47_length, parsed_length);
 
   icu::Locale icu_locale(icu_result);
   if (icu_locale.isBogus()) {
@@ -102,6 +96,16 @@ icu::Locale Intl::CreateICULocale(Isolate* isolate,
   }
 
   return icu_locale;
+}
+
+icu::Locale Intl::CreateICULocale(Isolate* isolate,
+                                  Handle<String> bcp47_locale_str) {
+  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
+  v8::String::Utf8Value bcp47_locale_utf8(v8_isolate,
+                                          v8::Utils::ToLocal(bcp47_locale_str));
+  CHECK_NOT_NULL(*bcp47_locale_utf8);
+  std::string bcp47_locale(*bcp47_locale_utf8);
+  return CreateICULocale(bcp47_locale);
 }
 
 // static
@@ -159,9 +163,15 @@ void Intl::AddElement(Isolate* isolate, Handle<JSArray> array, int index,
   JSObject::AddProperty(isolate, element, additional_property_name,
                         additional_property_value, NONE);
 }
+
+namespace {
+
 // Build the shortened locale; eg, convert xx_Yyyy_ZZ  to xx_ZZ.
-bool Intl::RemoveLocaleScriptTag(const std::string& icu_locale,
-                                 std::string* locale_less_script) {
+//
+// If locale has a script tag then return true and the locale without the
+// script else return false and an empty string.
+bool RemoveLocaleScriptTag(const std::string& icu_locale,
+                           std::string* locale_less_script) {
   icu::Locale new_locale = icu::Locale::createCanonical(icu_locale.c_str());
   const char* icu_script = new_locale.getScript();
   if (icu_script == nullptr || strlen(icu_script) == 0) {
@@ -172,30 +182,33 @@ bool Intl::RemoveLocaleScriptTag(const std::string& icu_locale,
   const char* icu_language = new_locale.getLanguage();
   const char* icu_country = new_locale.getCountry();
   icu::Locale short_locale = icu::Locale(icu_language, icu_country);
-  const char* icu_name = short_locale.getName();
-  *locale_less_script = std::string(icu_name);
+  *locale_less_script = short_locale.getName();
   return true;
 }
 
-std::set<std::string> Intl::GetAvailableLocales(const IcuService& service) {
+}  // namespace
+
+std::set<std::string> Intl::GetAvailableLocales(const ICUService service) {
   const icu::Locale* icu_available_locales = nullptr;
   int32_t count = 0;
   std::set<std::string> locales;
 
   switch (service) {
-    case IcuService::kBreakIterator:
+    case ICUService::kBreakIterator:
+    case ICUService::kSegmenter:
       icu_available_locales = icu::BreakIterator::getAvailableLocales(count);
       break;
-    case IcuService::kCollator:
+    case ICUService::kCollator:
       icu_available_locales = icu::Collator::getAvailableLocales(count);
       break;
-    case IcuService::kDateFormat:
+    case ICUService::kRelativeDateTimeFormatter:
+    case ICUService::kDateFormat:
       icu_available_locales = icu::DateFormat::getAvailableLocales(count);
       break;
-    case IcuService::kNumberFormat:
+    case ICUService::kNumberFormat:
       icu_available_locales = icu::NumberFormat::getAvailableLocales(count);
       break;
-    case IcuService::kPluralRules:
+    case ICUService::kPluralRules:
       // TODO(littledan): For PluralRules, filter out locales that
       // don't support PluralRules.
       // PluralRules is missing an appropriate getAvailableLocales method,
@@ -203,44 +216,7 @@ std::set<std::string> Intl::GetAvailableLocales(const IcuService& service) {
       // https://ssl.icu-project.org/trac/ticket/12756
       icu_available_locales = icu::Locale::getAvailableLocales(count);
       break;
-    case IcuService::kResourceBundle: {
-      UErrorCode status = U_ZERO_ERROR;
-      UEnumeration* en = ures_openAvailableLocales(nullptr, &status);
-      int32_t length = 0;
-      const char* locale_str = uenum_next(en, &length, &status);
-      while (U_SUCCESS(status) && (locale_str != nullptr)) {
-        std::string locale(locale_str, length);
-        std::replace(locale.begin(), locale.end(), '_', '-');
-        locales.insert(locale);
-        std::string shortened_locale;
-        if (Intl::RemoveLocaleScriptTag(locale_str, &shortened_locale)) {
-          std::replace(shortened_locale.begin(), shortened_locale.end(), '_',
-                       '-');
-          locales.insert(shortened_locale);
-        }
-        locale_str = uenum_next(en, &length, &status);
-      }
-      uenum_close(en);
-      return locales;
-    }
-    case IcuService::kRelativeDateTimeFormatter: {
-      // ICU RelativeDateTimeFormatter does not provide a getAvailableLocales()
-      // interface, because RelativeDateTimeFormatter depends on
-      // 1. NumberFormat and 2. ResourceBundle, return the
-      // intersection of these two set.
-      // ICU FR at https://unicode-org.atlassian.net/browse/ICU-20009
-      // TODO(ftang): change to call ICU's getAvailableLocales() after it is
-      // added.
-      std::set<std::string> number_format_set(
-          Intl::GetAvailableLocales(IcuService::kNumberFormat));
-      std::set<std::string> resource_bundle_set(
-          Intl::GetAvailableLocales(IcuService::kResourceBundle));
-      set_intersection(resource_bundle_set.begin(), resource_bundle_set.end(),
-                       number_format_set.begin(), number_format_set.end(),
-                       std::inserter(locales, locales.begin()));
-      return locales;
-    }
-    case IcuService::kListFormatter: {
+    case ICUService::kListFormatter: {
       // TODO(ftang): for now just use
       // icu::Locale::getAvailableLocales(count) until we migrate to
       // Intl::GetAvailableLocales().
@@ -267,7 +243,7 @@ std::set<std::string> Intl::GetAvailableLocales(const IcuService& service) {
     locales.insert(locale);
 
     std::string shortened_locale;
-    if (Intl::RemoveLocaleScriptTag(icu_name, &shortened_locale)) {
+    if (RemoveLocaleScriptTag(icu_name, &shortened_locale)) {
       std::replace(shortened_locale.begin(), shortened_locale.end(), '_', '-');
       locales.insert(shortened_locale);
     }
@@ -276,30 +252,60 @@ std::set<std::string> Intl::GetAvailableLocales(const IcuService& service) {
   return locales;
 }
 
-IcuService Intl::StringToIcuService(Handle<String> service) {
-  if (service->IsUtf8EqualTo(CStrVector("collator"))) {
-    return IcuService::kCollator;
-  } else if (service->IsUtf8EqualTo(CStrVector("numberformat"))) {
-    return IcuService::kNumberFormat;
-  } else if (service->IsUtf8EqualTo(CStrVector("dateformat"))) {
-    return IcuService::kDateFormat;
-  } else if (service->IsUtf8EqualTo(CStrVector("breakiterator"))) {
-    return IcuService::kBreakIterator;
-  } else if (service->IsUtf8EqualTo(CStrVector("pluralrules"))) {
-    return IcuService::kPluralRules;
-  } else if (service->IsUtf8EqualTo(CStrVector("relativetimeformat"))) {
-    return IcuService::kRelativeDateTimeFormatter;
-  } else if (service->IsUtf8EqualTo(CStrVector("listformat"))) {
-    return IcuService::kListFormatter;
+namespace {
+
+// TODO(gsathya): Remove this once we port ResolveLocale to C++.
+ICUService StringToICUService(Handle<String> service) {
+  std::unique_ptr<char[]> service_cstr = service->ToCString();
+  if (strcmp(service_cstr.get(), "collator") == 0) {
+    return ICUService::kCollator;
+  } else if (strcmp(service_cstr.get(), "numberformat") == 0) {
+    return ICUService::kNumberFormat;
+  } else if (strcmp(service_cstr.get(), "dateformat") == 0) {
+    return ICUService::kDateFormat;
+  } else if (strcmp(service_cstr.get(), "breakiterator") == 0) {
+    return ICUService::kBreakIterator;
+  } else if (strcmp(service_cstr.get(), "pluralrules") == 0) {
+    return ICUService::kPluralRules;
+  } else if (strcmp(service_cstr.get(), "relativetimeformat") == 0) {
+    return ICUService::kRelativeDateTimeFormatter;
+  } else if (strcmp(service_cstr.get(), "listformat") == 0) {
+    return ICUService::kListFormatter;
+  } else if (service->IsUtf8EqualTo(CStrVector("segmenter"))) {
+    return ICUService::kSegmenter;
   }
   UNREACHABLE();
 }
+
+const char* ICUServiceToString(ICUService service) {
+  switch (service) {
+    case ICUService::kCollator:
+      return "Intl.Collator";
+    case ICUService::kNumberFormat:
+      return "Intl.NumberFormat";
+    case ICUService::kDateFormat:
+      return "Intl.DateFormat";
+    case ICUService::kBreakIterator:
+      return "Intl.v8BreakIterator";
+    case ICUService::kPluralRules:
+      return "Intl.PluralRules";
+    case ICUService::kRelativeDateTimeFormatter:
+      return "Intl.RelativeTimeFormat";
+    case ICUService::kListFormatter:
+      return "Intl.kListFormat";
+    case ICUService::kSegmenter:
+      return "Intl.kSegmenter";
+  }
+  UNREACHABLE();
+}
+
+}  // namespace
 
 V8_WARN_UNUSED_RESULT MaybeHandle<JSObject> Intl::AvailableLocalesOf(
     Isolate* isolate, Handle<String> service) {
   Factory* factory = isolate->factory();
   std::set<std::string> results =
-      Intl::GetAvailableLocales(StringToIcuService(service));
+      Intl::GetAvailableLocales(StringToICUService(service));
   Handle<JSObject> locales = factory->NewJSObjectWithNullProto();
 
   int32_t i = 0;
@@ -378,6 +384,7 @@ MaybeHandle<Object> Intl::LegacyUnwrapReceiver(Isolate* isolate,
 
 namespace {
 
+#if USE_CHROMIUM_ICU == 0 && U_ICU_VERSION_MAJOR_NUM < 63
 // Define general regexp macros.
 // Note "(?:" means the regexp group a non-capture group.
 #define REGEX_ALPHA "[a-z]"
@@ -489,45 +496,9 @@ icu::RegexMatcher* GetLanguageVariantRegexMatcher(Isolate* isolate) {
   }
   return language_variant_regexp_matcher;
 }
+#endif  // USE_CHROMIUM_ICU == 0 && U_ICU_VERSION_MAJOR_NUM < 63
 
 }  // anonymous namespace
-
-MaybeHandle<JSObject> Intl::ResolveLocale(Isolate* isolate, const char* service,
-                                          Handle<Object> requestedLocales,
-                                          Handle<Object> options) {
-  Handle<String> service_str =
-      isolate->factory()->NewStringFromAsciiChecked(service);
-
-  Handle<JSFunction> resolve_locale_function = isolate->resolve_locale();
-
-  Handle<Object> result;
-  Handle<Object> undefined_value = isolate->factory()->undefined_value();
-  Handle<Object> args[] = {service_str, requestedLocales, options};
-  ASSIGN_RETURN_ON_EXCEPTION(
-      isolate, result,
-      Execution::Call(isolate, resolve_locale_function, undefined_value,
-                      arraysize(args), args),
-      JSObject);
-
-  return Handle<JSObject>::cast(result);
-}
-
-MaybeHandle<JSObject> Intl::CanonicalizeLocaleListJS(Isolate* isolate,
-                                                     Handle<Object> locales) {
-  Handle<JSFunction> canonicalize_locale_list_function =
-      isolate->canonicalize_locale_list();
-
-  Handle<Object> result;
-  Handle<Object> undefined_value = isolate->factory()->undefined_value();
-  Handle<Object> args[] = {locales};
-  ASSIGN_RETURN_ON_EXCEPTION(
-      isolate, result,
-      Execution::Call(isolate, canonicalize_locale_list_function,
-                      undefined_value, arraysize(args), args),
-      JSObject);
-
-  return Handle<JSObject>::cast(result);
-}
 
 Maybe<bool> Intl::GetStringOption(Isolate* isolate, Handle<JSReceiver> options,
                                   const char* property,
@@ -614,6 +585,7 @@ char AsciiToLower(char c) {
   return c | (1 << 5);
 }
 
+#if USE_CHROMIUM_ICU == 0 && U_ICU_VERSION_MAJOR_NUM < 63
 /**
  * Check the structural Validity of the language tag per ECMA 402 6.2.2:
  *   - Well-formed per RFC 5646 2.1
@@ -625,7 +597,7 @@ char AsciiToLower(char c) {
  * primary/extended language, script, region, variant are not checked
  * against the IANA language subtag registry.
  *
- * ICU is too permissible and lets invalid tags, like
+ * ICU 62 or earlier is too permissible and lets invalid tags, like
  * hant-cmn-cn, through.
  *
  * Returns false if the language tag is invalid.
@@ -716,6 +688,7 @@ bool IsStructurallyValidLanguageTag(Isolate* isolate,
 
   return true;
 }
+#endif  // USE_CHROMIUM_ICU == 0 || U_ICU_VERSION_MAJOR_NUM < 63
 
 bool IsLowerAscii(char c) { return c >= 'a' && c < 'z'; }
 
@@ -767,6 +740,14 @@ Maybe<std::string> Intl::CanonicalizeLanguageTag(Isolate* isolate,
   }
   std::string locale(locale_str->ToCString().get());
 
+  if (locale.length() == 0 ||
+      !String::IsAscii(locale.data(), static_cast<int>(locale.length()))) {
+    THROW_NEW_ERROR_RETURN_VALUE(
+        isolate,
+        NewRangeError(MessageTemplate::kInvalidLanguageTag, locale_str),
+        Nothing<std::string>());
+  }
+
   // Optimize for the most common case: a 2-letter language code in the
   // canonical form/lowercase that is not one of the deprecated codes
   // (in, iw, ji, jw). Don't check for ~70 of 3-letter deprecated language
@@ -780,12 +761,15 @@ Maybe<std::string> Intl::CanonicalizeLanguageTag(Isolate* isolate,
   // Because per BCP 47 2.1.1 language tags are case-insensitive, lowercase
   // the input before any more check.
   std::transform(locale.begin(), locale.end(), locale.begin(), AsciiToLower);
+
+#if USE_CHROMIUM_ICU == 0 && U_ICU_VERSION_MAJOR_NUM < 63
   if (!IsStructurallyValidLanguageTag(isolate, locale)) {
     THROW_NEW_ERROR_RETURN_VALUE(
         isolate,
         NewRangeError(MessageTemplate::kInvalidLanguageTag, locale_str),
         Nothing<std::string>());
   }
+#endif
 
   // ICU maps a few grandfathered tags to what looks like a regular language
   // tag even though IANA language tag registry does not have a preferred
@@ -803,11 +787,18 @@ Maybe<std::string> Intl::CanonicalizeLanguageTag(Isolate* isolate,
   // https://unicode-org.atlassian.net/browse/ICU-13417
   UErrorCode error = U_ZERO_ERROR;
   char icu_result[ULOC_FULLNAME_CAPACITY];
+  // uloc_forLanguageTag checks the structrual validity. If the input BCP47
+  // language tag is parsed all the way to the end, it indicates that the input
+  // is structurally valid. Due to a couple of bugs, we can't use it
+  // without Chromium patches or ICU 62 or earlier.
+  int parsed_length;
   uloc_forLanguageTag(locale.c_str(), icu_result, ULOC_FULLNAME_CAPACITY,
-                      nullptr, &error);
-  if (U_FAILURE(error) || error == U_STRING_NOT_TERMINATED_WARNING) {
-    // TODO(jshin): This should not happen because the structural validity
-    // is already checked. If that's the case, remove this.
+                      &parsed_length, &error);
+  if (U_FAILURE(error) ||
+#if USE_CHROMIUM_ICU == 1 || U_ICU_VERSION_MAJOR_NUM >= 63
+      static_cast<size_t>(parsed_length) < locale.length() ||
+#endif
+      error == U_STRING_NOT_TERMINATED_WARNING) {
     THROW_NEW_ERROR_RETURN_VALUE(
         isolate,
         NewRangeError(MessageTemplate::kInvalidLanguageTag, locale_str),
@@ -874,8 +865,10 @@ Maybe<std::vector<std::string>> Intl::CanonicalizeLocaleList(
     // 7a. Let Pk be ToString(k).
     // 7b. Let kPresent be ? HasProperty(O, Pk).
     LookupIterator it(isolate, o, k);
+    Maybe<bool> maybe_found = JSReceiver::HasProperty(&it);
+    MAYBE_RETURN(maybe_found, Nothing<std::vector<std::string>>());
     // 7c. If kPresent is true, then
-    if (!it.IsFound()) continue;
+    if (!maybe_found.FromJust()) continue;
     // 7c i. Let kValue be ? Get(O, Pk).
     Handle<Object> k_value;
     ASSIGN_RETURN_ON_EXCEPTION_VALUE(isolate, k_value, Object::GetProperty(&it),
@@ -1120,7 +1113,7 @@ Maybe<bool> Intl::SetNumberFormatDigitOptions(Isolate* isolate,
   // 9.  Let mnsd be ? Get(options, "minimumSignificantDigits").
   Handle<Object> mnsd_obj;
   Handle<String> mnsd_str =
-      isolate->factory()->NewStringFromStaticChars("minimumSignificantDigits");
+      isolate->factory()->minimumSignificantDigits_string();
   ASSIGN_RETURN_ON_EXCEPTION_VALUE(
       isolate, mnsd_obj, JSReceiver::GetProperty(isolate, options, mnsd_str),
       Nothing<bool>());
@@ -1128,7 +1121,7 @@ Maybe<bool> Intl::SetNumberFormatDigitOptions(Isolate* isolate,
   // 10. Let mxsd be ? Get(options, "maximumSignificantDigits").
   Handle<Object> mxsd_obj;
   Handle<String> mxsd_str =
-      isolate->factory()->NewStringFromStaticChars("maximumSignificantDigits");
+      isolate->factory()->maximumSignificantDigits_string();
   ASSIGN_RETURN_ON_EXCEPTION_VALUE(
       isolate, mxsd_obj, JSReceiver::GetProperty(isolate, options, mxsd_str),
       Nothing<bool>());
@@ -1174,96 +1167,126 @@ Maybe<bool> Intl::SetNumberFormatDigitOptions(Isolate* isolate,
 
 namespace {
 
-// ECMA 402 9.2.2 BestAvailableLocale(availableLocales, locale)
-// https://tc39.github.io/ecma402/#sec-bestavailablelocale
-std::string BestAvailableLocale(std::set<std::string> available_locales,
-                                std::string locale) {
-  const char separator = '-';
-
+// ecma402/#sec-bestavailablelocale
+std::string BestAvailableLocale(const std::set<std::string>& available_locales,
+                                const std::string& locale) {
   // 1. Let candidate be locale.
+  std::string candidate = locale;
+
   // 2. Repeat,
-  do {
+  while (true) {
     // 2.a. If availableLocales contains an element equal to candidate, return
     //      candidate.
-    if (available_locales.find(locale) != available_locales.end()) {
-      return locale;
+    if (available_locales.find(candidate) != available_locales.end()) {
+      return candidate;
     }
+
     // 2.b. Let pos be the character index of the last occurrence of "-"
     //      (U+002D) within candidate. If that character does not occur, return
     //      undefined.
-    size_t pos = locale.rfind(separator);
+    size_t pos = candidate.rfind('-');
     if (pos == std::string::npos) {
-      return "";
+      return std::string();
     }
+
     // 2.c. If pos ≥ 2 and the character "-" occurs at index pos-2 of candidate,
     //      decrease pos by 2.
-    if (pos >= 2 && locale[pos - 2] == separator) {
+    if (pos >= 2 && candidate[pos - 2] == '-') {
       pos -= 2;
     }
+
     // 2.d. Let candidate be the substring of candidate from position 0,
     //      inclusive, to position pos, exclusive.
-    locale = locale.substr(0, pos);
-  } while (true);
+    candidate = candidate.substr(0, pos);
+  }
 }
 
-#define ANY_EXTENSION_REGEXP "-[a-z0-9]{1}-.*"
+struct ParsedLocale {
+  std::string no_extensions_locale;
+  std::string extension;
+};
 
-std::unique_ptr<icu::RegexMatcher> GetAnyExtensionRegexpMatcher() {
-  UErrorCode status = U_ZERO_ERROR;
-  std::unique_ptr<icu::RegexMatcher> matcher(new icu::RegexMatcher(
-      icu::UnicodeString(ANY_EXTENSION_REGEXP, -1, US_INV), 0, status));
-  DCHECK(U_SUCCESS(status));
-  return matcher;
+// Returns a struct containing a bcp47 tag without unicode extensions
+// and the removed unicode extensions.
+//
+// For example, given 'en-US-u-co-emoji' returns 'en-US' and
+// 'u-co-emoji'.
+ParsedLocale ParseBCP47Locale(const std::string& locale) {
+  size_t length = locale.length();
+  ParsedLocale parsed_locale;
+
+  // Privateuse or grandfathered locales have no extension sequences.
+  if ((length > 1) && (locale[1] == '-')) {
+    // Check to make sure that this really is a grandfathered or
+    // privateuse extension. ICU can sometimes mess up the
+    // canonicalization.
+    CHECK(locale[0] == 'x' || locale[0] == 'i');
+    parsed_locale.no_extensions_locale = locale;
+    return parsed_locale;
+  }
+
+  size_t unicode_extension_start = locale.find("-u-");
+
+  // No unicode extensions found.
+  if (unicode_extension_start == std::string::npos) {
+    parsed_locale.no_extensions_locale = locale;
+    return parsed_locale;
+  }
+
+  size_t private_extension_start = locale.find("-x-");
+
+  // Unicode extensions found within privateuse subtags don't count.
+  if (private_extension_start != std::string::npos &&
+      private_extension_start < unicode_extension_start) {
+    parsed_locale.no_extensions_locale = locale;
+    return parsed_locale;
+  }
+
+  const std::string beginning = locale.substr(0, unicode_extension_start);
+  size_t unicode_extension_end = length;
+  DCHECK_GT(length, 2);
+
+  // Find the end of the extension production as per the bcp47 grammar
+  // by looking for '-' followed by 2 chars and then another '-'.
+  for (size_t i = unicode_extension_start + 1; i < length - 2; i++) {
+    if (locale[i] != '-') continue;
+
+    if (locale[i + 2] == '-') {
+      unicode_extension_end = i;
+      break;
+    }
+
+    i += 2;
+  }
+
+  const std::string end = locale.substr(unicode_extension_end);
+  parsed_locale.no_extensions_locale = beginning + end;
+  parsed_locale.extension =
+      locale.substr(unicode_extension_start, unicode_extension_end);
+  return parsed_locale;
 }
 
-#undef ANY_EXTENSION_REGEXP
-
-// ECMA 402 9.2.7 LookupSupportedLocales(availableLocales, requestedLocales)
-// https://tc39.github.io/ecma402/#sec-lookupsupportedlocales
+// ecma402/#sec-lookupsupportedlocales
 std::vector<std::string> LookupSupportedLocales(
     const std::set<std::string>& available_locales,
     const std::vector<std::string>& requested_locales) {
-  std::unique_ptr<icu::RegexMatcher> matcher = GetAnyExtensionRegexpMatcher();
-
   // 1. Let subset be a new empty List.
   std::vector<std::string> subset;
 
   // 2. For each element locale of requestedLocales in List order, do
-  for (const auto& locale : requested_locales) {
-    // 2.a. Let noExtensionsLocale be the String value that is locale with all
-    //      Unicode locale extension sequences removed.
-    icu::UnicodeString locale_uni(locale.c_str(), -1, US_INV);
-    // TODO(bstell): look at using uloc_forLanguageTag to convert the language
-    // tag to locale id
-    // TODO(bstell): look at using uloc_getBaseName to just get the name without
-    // all the keywords
-    matcher->reset(locale_uni);
-    UErrorCode status = U_ZERO_ERROR;
-    // TODO(bstell): need to determine if this is the correct behavior.
-    // This matches the JS implementation but might not match the spec.
-    // According to
-    // https://tc39.github.io/ecma402/#sec-unicode-locale-extension-sequences:
-    //
-    //     This standard uses the term "Unicode locale extension sequence" for
-    //     any substring of a language tag that is not part of a private use
-    //     subtag sequence, starts with a separator  "-" and the singleton "u",
-    //     and includes the maximum sequence of following non-singleton subtags
-    //     and their preceding "-" separators.
-    //
-    // According to the spec a locale "en-t-aaa-u-bbb-v-ccc-x-u-ddd", should
-    // remove only the "-u-bbb" part, and keep everything else, whereas this
-    // regexp matcher would leave only the "en".
-    icu::UnicodeString no_extensions_locale_uni =
-        matcher->replaceAll("", status);
-    DCHECK(U_SUCCESS(status));
-    std::string no_extensions_locale;
-    no_extensions_locale_uni.toUTF8String(no_extensions_locale);
-    // 2.b. Let availableLocale be BestAvailableLocale(availableLocales,
-    //      noExtensionsLocale).
+  for (const std::string& locale : requested_locales) {
+    // 2. a. Let noExtensionsLocale be the String value that is locale
+    //       with all Unicode locale extension sequences removed.
+    std::string no_extension_locale =
+        ParseBCP47Locale(locale).no_extensions_locale;
+
+    // 2. b. Let availableLocale be
+    //       BestAvailableLocale(availableLocales, noExtensionsLocale).
     std::string available_locale =
-        BestAvailableLocale(available_locales, no_extensions_locale);
-    // 2.c. If availableLocale is not undefined, append locale to the end of
-    //      subset.
+        BestAvailableLocale(available_locales, no_extension_locale);
+
+    // 2. c. If availableLocale is not undefined, append locale to the
+    //       end of subset.
     if (!available_locale.empty()) {
       subset.push_back(locale);
     }
@@ -1280,8 +1303,6 @@ std::vector<std::string> BestFitSupportedLocales(
     const std::vector<std::string>& requested_locales) {
   return LookupSupportedLocales(available_locales, requested_locales);
 }
-
-enum MatcherOption { kBestFit, kLookup };
 
 // TODO(bstell): should this be moved somewhere where it is reusable?
 // Implement steps 5, 6, 7 for ECMA 402 9.2.9 SupportedLocales
@@ -1324,31 +1345,33 @@ MaybeHandle<JSObject> CreateReadOnlyArray(Isolate* isolate,
 // ECMA 402 9.2.9 SupportedLocales(availableLocales, requestedLocales, options)
 // https://tc39.github.io/ecma402/#sec-supportedlocales
 MaybeHandle<JSObject> SupportedLocales(
-    Isolate* isolate, const std::string& service,
+    Isolate* isolate, ICUService service,
     const std::set<std::string>& available_locales,
     const std::vector<std::string>& requested_locales, Handle<Object> options) {
   std::vector<std::string> supported_locales;
 
-  // 1. If options is not undefined, then
-  //    a. Let options be ? ToObject(options).
-  //    b. Let matcher be ? GetOption(options, "localeMatcher", "string",
-  //       « "lookup", "best fit" », "best fit").
   // 2. Else, let matcher be "best fit".
-  MatcherOption matcher = kBestFit;
+  Intl::MatcherOption matcher = Intl::MatcherOption::kBestFit;
+
+  // 1. If options is not undefined, then
   if (!options->IsUndefined(isolate)) {
+    // 1. a. Let options be ? ToObject(options).
     Handle<JSReceiver> options_obj;
     ASSIGN_RETURN_ON_EXCEPTION(isolate, options_obj,
                                Object::ToObject(isolate, options), JSObject);
+
+    // 1. b. Let matcher be ? GetOption(options, "localeMatcher", "string",
+    //       « "lookup", "best fit" », "best fit").
     std::unique_ptr<char[]> matcher_str = nullptr;
     std::vector<const char*> matcher_values = {"lookup", "best fit"};
-    Maybe<bool> maybe_found_matcher =
-        Intl::GetStringOption(isolate, options_obj, "localeMatcher",
-                              matcher_values, service.c_str(), &matcher_str);
+    Maybe<bool> maybe_found_matcher = Intl::GetStringOption(
+        isolate, options_obj, "localeMatcher", matcher_values,
+        ICUServiceToString(service), &matcher_str);
     MAYBE_RETURN(maybe_found_matcher, MaybeHandle<JSObject>());
     if (maybe_found_matcher.FromJust()) {
       DCHECK_NOT_NULL(matcher_str.get());
       if (strcmp(matcher_str.get(), "lookup") == 0) {
-        matcher = kLookup;
+        matcher = Intl::MatcherOption::kLookup;
       }
     }
   }
@@ -1356,14 +1379,14 @@ MaybeHandle<JSObject> SupportedLocales(
   // 3. If matcher is "best fit", then
   //    a. Let supportedLocales be BestFitSupportedLocales(availableLocales,
   //       requestedLocales).
-  if (matcher == kBestFit) {
+  if (matcher == Intl::MatcherOption::kBestFit) {
     supported_locales =
         BestFitSupportedLocales(available_locales, requested_locales);
   } else {
     // 4. Else,
     //    a. Let supportedLocales be LookupSupportedLocales(availableLocales,
     //       requestedLocales).
-    DCHECK_EQ(matcher, kLookup);
+    DCHECK_EQ(matcher, Intl::MatcherOption::kLookup);
     supported_locales =
         LookupSupportedLocales(available_locales, requested_locales);
   }
@@ -1387,33 +1410,26 @@ MaybeHandle<JSObject> SupportedLocales(
 }  // namespace
 
 // ECMA 402 Intl.*.supportedLocalesOf
-// https://tc39.github.io/ecma402/#sec-intl.collator.supportedlocalesof
-// https://tc39.github.io/ecma402/#sec-intl.numberformat.supportedlocalesof
-// https://tc39.github.io/ecma402/#sec-intl.datetimeformat.supportedlocalesof
-// https://tc39.github.io/ecma402/#sec-intl.pluralrules.supportedlocalesof
-// http://tc39.github.io/proposal-intl-relative-time/#sec-Intl.RelativeTimeFormat.supportedLocalesOf
 MaybeHandle<JSObject> Intl::SupportedLocalesOf(Isolate* isolate,
-                                               Handle<String> service,
-                                               Handle<Object> locales_in,
-                                               Handle<Object> options_in) {
+                                               ICUService service,
+                                               Handle<Object> locales,
+                                               Handle<Object> options) {
   // Let availableLocales be %Collator%.[[AvailableLocales]].
-  IcuService icu_service = Intl::StringToIcuService(service);
-  std::set<std::string> available_locales = GetAvailableLocales(icu_service);
-  std::vector<std::string> requested_locales;
+  std::set<std::string> available_locales = GetAvailableLocales(service);
+
   // Let requestedLocales be ? CanonicalizeLocaleList(locales).
-  bool got_requested_locales =
-      CanonicalizeLocaleList(isolate, locales_in, false).To(&requested_locales);
-  if (!got_requested_locales) {
-    return MaybeHandle<JSObject>();
-  }
+  Maybe<std::vector<std::string>> requested_locales =
+      CanonicalizeLocaleList(isolate, locales, false);
+  MAYBE_RETURN(requested_locales, MaybeHandle<JSObject>());
 
   // Return ? SupportedLocales(availableLocales, requestedLocales, options).
-  std::string service_str(service->ToCString().get());
-  return SupportedLocales(isolate, service_str, available_locales,
-                          requested_locales, options_in);
+  return SupportedLocales(isolate, service, available_locales,
+                          requested_locales.FromJust(), options);
 }
 
-std::map<std::string, std::string> Intl::LookupUnicodeExtensions(
+namespace {
+
+std::map<std::string, std::string> LookupUnicodeExtensions(
     const icu::Locale& icu_locale, const std::set<std::string>& relevant_keys) {
   std::map<std::string, std::string> extensions;
 
@@ -1458,6 +1474,107 @@ std::map<std::string, std::string> Intl::LookupUnicodeExtensions(
   }
 
   return extensions;
+}
+
+// ecma402/#sec-lookupmatcher
+std::string LookupMatcher(Isolate* isolate,
+                          const std::set<std::string>& available_locales,
+                          const std::vector<std::string>& requested_locales) {
+  // 1. Let result be a new Record.
+  std::string result;
+
+  // 2. For each element locale of requestedLocales in List order, do
+  for (const std::string& locale : requested_locales) {
+    // 2. a. Let noExtensionsLocale be the String value that is locale
+    //       with all Unicode locale extension sequences removed.
+    ParsedLocale parsed_locale = ParseBCP47Locale(locale);
+    std::string no_extensions_locale = parsed_locale.no_extensions_locale;
+
+    // 2. b. Let availableLocale be
+    //       BestAvailableLocale(availableLocales, noExtensionsLocale).
+    std::string available_locale =
+        BestAvailableLocale(available_locales, no_extensions_locale);
+
+    // 2. c. If availableLocale is not undefined, append locale to the
+    //       end of subset.
+    if (!available_locale.empty()) {
+      // Note: The following steps are not performed here because we
+      // can use ICU to parse the unicode locale extension sequence
+      // as part of Intl::ResolveLocale.
+      //
+      // There's no need to separate the unicode locale extensions
+      // right here. Instead just return the available locale with the
+      // extensions.
+      //
+      // 2. c. i. Set result.[[locale]] to availableLocale.
+      // 2. c. ii. If locale and noExtensionsLocale are not the same
+      // String value, then
+      // 2. c. ii. 1. Let extension be the String value consisting of
+      // the first substring of locale that is a Unicode locale
+      // extension sequence.
+      // 2. c. ii. 2. Set result.[[extension]] to extension.
+      // 2. c. iii. Return result.
+      return available_locale + parsed_locale.extension;
+    }
+  }
+
+  // 3. Let defLocale be DefaultLocale();
+  // 4. Set result.[[locale]] to defLocale.
+  // 5. Return result.
+  return Intl::DefaultLocale(isolate);
+}
+
+}  // namespace
+
+// This function doesn't correspond exactly with the spec. Instead
+// we use ICU to do all the string manipulations that the spec
+// peforms.
+//
+// The spec uses this function to normalize values for various
+// relevant extension keys (such as disallowing "search" for
+// collation). Instead of doing this here, we let the callers of
+// this method perform such normalization.
+//
+// ecma402/#sec-resolvelocale
+Intl::ResolvedLocale Intl::ResolveLocale(
+    Isolate* isolate, const std::set<std::string>& available_locales,
+    const std::vector<std::string>& requested_locales, MatcherOption matcher,
+    const std::set<std::string>& relevant_extension_keys) {
+  std::string locale;
+  if (matcher == Intl::MatcherOption::kLookup) {
+    locale = LookupMatcher(isolate, available_locales, requested_locales);
+  } else if (matcher == Intl::MatcherOption::kBestFit) {
+    // TODO(intl): Implement better lookup algorithm.
+    locale = LookupMatcher(isolate, available_locales, requested_locales);
+  }
+
+  icu::Locale icu_locale = CreateICULocale(locale);
+  std::map<std::string, std::string> extensions =
+      LookupUnicodeExtensions(icu_locale, relevant_extension_keys);
+
+  // TODO(gsathya): Remove privateuse subtags from extensions.
+
+  return Intl::ResolvedLocale{locale, icu_locale, extensions};
+}
+
+Managed<icu::UnicodeString>* Intl::SetTextToBreakIterator(
+    Isolate* isolate, Handle<String> text, icu::BreakIterator* break_iterator) {
+  icu::UnicodeString* u_text;
+  int length = text->length();
+  text = String::Flatten(isolate, text);
+  {
+    DisallowHeapAllocation no_gc;
+    String::FlatContent flat = text->GetFlatContent();
+    std::unique_ptr<uc16[]> sap;
+    const UChar* text_value = GetUCharBufferFromFlat(flat, &sap, length);
+    u_text = new icu::UnicodeString(text_value, length);
+  }
+
+  Handle<Managed<icu::UnicodeString>> new_u_text =
+      Managed<icu::UnicodeString>::FromRawPtr(isolate, 0, u_text);
+
+  break_iterator->setText(*u_text);
+  return *new_u_text;
 }
 
 }  // namespace internal

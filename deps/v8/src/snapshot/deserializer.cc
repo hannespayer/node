@@ -26,7 +26,7 @@ void Deserializer<AllocatorT>::Initialize(Isolate* isolate) {
   DCHECK_NOT_NULL(isolate);
   isolate_ = isolate;
   DCHECK_NULL(external_reference_table_);
-  external_reference_table_ = isolate->heap()->external_reference_table();
+  external_reference_table_ = isolate->external_reference_table();
 #ifdef DEBUG
   // Count the number of external references registered through the API.
   num_api_references_ = 0;
@@ -473,6 +473,11 @@ bool Deserializer<AllocatorT>::ReadData(MaybeObject** current,
       SINGLE_CASE(kPartialSnapshotCache, kPlain, kStartOfObject, 0)
       SINGLE_CASE(kPartialSnapshotCache, kFromCode, kStartOfObject, 0)
       SINGLE_CASE(kPartialSnapshotCache, kFromCode, kInnerPointer, 0)
+      // Find an object in the partial snapshots cache and write a pointer to it
+      // to the current object.
+      SINGLE_CASE(kReadOnlyObjectCache, kPlain, kStartOfObject, 0)
+      SINGLE_CASE(kReadOnlyObjectCache, kFromCode, kStartOfObject, 0)
+      SINGLE_CASE(kReadOnlyObjectCache, kFromCode, kInnerPointer, 0)
       // Find an object in the attached references and write a pointer to it to
       // the current object.
       SINGLE_CASE(kAttachedReference, kPlain, kStartOfObject, 0)
@@ -659,7 +664,12 @@ bool Deserializer<AllocatorT>::ReadData(MaybeObject** current,
         break;
       }
 
-      STATIC_ASSERT(kNumberOfRootArrayConstants == Heap::kOldSpaceRoots);
+      // First kNumberOfRootArrayConstants roots are guaranteed to be in
+      // the old space.
+      STATIC_ASSERT(
+          static_cast<int>(RootIndex::kFirstImmortalImmovableRoot) == 0);
+      STATIC_ASSERT(kNumberOfRootArrayConstants <=
+                    static_cast<int>(RootIndex::kLastImmortalImmovableRoot));
       STATIC_ASSERT(kNumberOfRootArrayConstants == 32);
       SIXTEEN_CASES(kRootArrayConstantsWithSkip)
       SIXTEEN_CASES(kRootArrayConstantsWithSkip + 16) {
@@ -674,7 +684,7 @@ bool Deserializer<AllocatorT>::ReadData(MaybeObject** current,
         int id = data & kRootArrayConstantsMask;
         RootIndex root_index = static_cast<RootIndex>(id);
         MaybeObject* object =
-            MaybeObject::FromObject(isolate->heap()->root(root_index));
+            MaybeObject::FromObject(isolate->root(root_index));
         DCHECK(!Heap::InNewSpace(object));
         DCHECK(!allocator()->next_reference_is_weak());
         UnalignedCopy(current++, &object);
@@ -807,9 +817,14 @@ MaybeObject** Deserializer<AllocatorT>::ReadDataCase(
     } else if (where == kRootArray) {
       int id = source_.GetInt();
       RootIndex root_index = static_cast<RootIndex>(id);
-      new_object = isolate->heap()->root(root_index);
+      new_object = isolate->root(root_index);
       emit_write_barrier = Heap::InNewSpace(new_object);
       hot_objects_.Add(HeapObject::cast(new_object));
+    } else if (where == kReadOnlyObjectCache) {
+      int cache_index = source_.GetInt();
+      new_object = isolate->read_only_object_cache()->at(cache_index);
+      DCHECK(!Heap::InNewSpace(new_object));
+      emit_write_barrier = false;
     } else if (where == kPartialSnapshotCache) {
       int cache_index = source_.GetInt();
       new_object = isolate->partial_snapshot_cache()->at(cache_index);

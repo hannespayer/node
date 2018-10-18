@@ -19,13 +19,12 @@
 #include "src/allocation.h"
 #include "src/assert-scope.h"
 #include "src/base/atomic-utils.h"
-#include "src/external-reference-table.h"
 #include "src/globals.h"
 #include "src/heap-symbols.h"
+#include "src/isolate-data.h"
 #include "src/objects.h"
 #include "src/objects/fixed-array.h"
 #include "src/objects/string-table.h"
-#include "src/roots.h"
 #include "src/visitors.h"
 
 namespace v8 {
@@ -51,127 +50,6 @@ class IncrementalMarking;
 class JSArrayBuffer;
 class ExternalString;
 using v8::MemoryPressureLevel;
-
-// Adapts PRIVATE_SYMBOL_LIST_GERNATOR entry to IMMORTAL_IMMOVABLE_ROOT_LIST
-// entry
-#define PRIVATE_SYMBOL_LIST_TO_IMMORTAL_IMMOVABLE_LIST_ADAPTER(V, name) V(name)
-
-// Heap roots that are known to be immortal immovable, for which we can safely
-// skip write barriers. This list is not complete and has omissions.
-#define IMMORTAL_IMMOVABLE_ROOT_LIST(V)     \
-  V(ArgumentsMarker)                        \
-  V(ArgumentsMarkerMap)                     \
-  V(ArrayBufferNeuteringProtector)          \
-  V(ArrayIteratorProtector)                 \
-  V(AwaitContextMap)                        \
-  V(BigIntMap)                              \
-  V(BlockContextMap)                        \
-  V(ObjectBoilerplateDescriptionMap)        \
-  V(BooleanMap)                             \
-  V(ByteArrayMap)                           \
-  V(BytecodeArrayMap)                       \
-  V(CatchContextMap)                        \
-  V(CellMap)                                \
-  V(CodeMap)                                \
-  V(DebugEvaluateContextMap)                \
-  V(DescriptorArrayMap)                     \
-  V(EphemeronHashTableMap)                  \
-  V(EmptyByteArray)                         \
-  V(EmptyDescriptorArray)                   \
-  V(EmptyFixedArray)                        \
-  V(EmptyFixedFloat32Array)                 \
-  V(EmptyFixedFloat64Array)                 \
-  V(EmptyFixedInt16Array)                   \
-  V(EmptyFixedInt32Array)                   \
-  V(EmptyFixedInt8Array)                    \
-  V(EmptyFixedUint16Array)                  \
-  V(EmptyFixedUint32Array)                  \
-  V(EmptyFixedUint8Array)                   \
-  V(EmptyFixedUint8ClampedArray)            \
-  V(EmptyOrderedHashMap)                    \
-  V(EmptyOrderedHashSet)                    \
-  V(EmptyPropertyCell)                      \
-  V(EmptyScopeInfo)                         \
-  V(EmptyScript)                            \
-  V(EmptySloppyArgumentsElements)           \
-  V(EmptySlowElementDictionary)             \
-  V(EvalContextMap)                         \
-  V(Exception)                              \
-  V(FalseValue)                             \
-  V(FixedArrayMap)                          \
-  V(FixedCOWArrayMap)                       \
-  V(FixedDoubleArrayMap)                    \
-  V(ForeignMap)                             \
-  V(FreeSpaceMap)                           \
-  V(FunctionContextMap)                     \
-  V(GlobalDictionaryMap)                    \
-  V(GlobalPropertyCellMap)                  \
-  V(HashTableMap)                           \
-  V(HeapNumberMap)                          \
-  V(HoleNanValue)                           \
-  V(InfinityValue)                          \
-  V(IsConcatSpreadableProtector)            \
-  V(JSMessageObjectMap)                     \
-  V(JsConstructEntryCode)                   \
-  V(JsEntryCode)                            \
-  V(ManyClosuresCell)                       \
-  V(ManyClosuresCellMap)                    \
-  V(MetaMap)                                \
-  V(MinusInfinityValue)                     \
-  V(MinusZeroValue)                         \
-  V(ModuleContextMap)                       \
-  V(ModuleInfoMap)                          \
-  V(MutableHeapNumberMap)                   \
-  V(NameDictionaryMap)                      \
-  V(NanValue)                               \
-  V(NativeContextMap)                       \
-  V(NoClosuresCellMap)                      \
-  V(NoElementsProtector)                    \
-  V(NullMap)                                \
-  V(NullValue)                              \
-  V(NumberDictionaryMap)                    \
-  V(OneClosureCellMap)                      \
-  V(OnePointerFillerMap)                    \
-  V(OptimizedOut)                           \
-  V(OrderedHashMapMap)                      \
-  V(OrderedHashSetMap)                      \
-  V(PreParsedScopeDataMap)                  \
-  V(PropertyArrayMap)                       \
-  V(ScopeInfoMap)                           \
-  V(ScriptContextMap)                       \
-  V(ScriptContextTableMap)                  \
-  V(SelfReferenceMarker)                    \
-  V(SharedFunctionInfoMap)                  \
-  V(SimpleNumberDictionaryMap)              \
-  V(SloppyArgumentsElementsMap)             \
-  V(SmallOrderedHashMapMap)                 \
-  V(SmallOrderedHashSetMap)                 \
-  V(ArraySpeciesProtector)                  \
-  V(TypedArraySpeciesProtector)             \
-  V(PromiseSpeciesProtector)                \
-  V(StaleRegister)                          \
-  V(StringIteratorProtector)                \
-  V(StringLengthProtector)                  \
-  V(StringTableMap)                         \
-  V(SymbolMap)                              \
-  V(TerminationException)                   \
-  V(TheHoleMap)                             \
-  V(TheHoleValue)                           \
-  V(TransitionArrayMap)                     \
-  V(TrueValue)                              \
-  V(TwoPointerFillerMap)                    \
-  V(UndefinedMap)                           \
-  V(UndefinedValue)                         \
-  V(UninitializedMap)                       \
-  V(UninitializedValue)                     \
-  V(UncompiledDataWithoutPreParsedScopeMap) \
-  V(UncompiledDataWithPreParsedScopeMap)    \
-  V(WeakFixedArrayMap)                      \
-  V(WeakArrayListMap)                       \
-  V(WithContextMap)                         \
-  V(empty_string)                           \
-  PRIVATE_SYMBOL_LIST_GENERATOR(            \
-      PRIVATE_SYMBOL_LIST_TO_IMMORTAL_IMMOVABLE_LIST_ADAPTER, V)
 
 class AllocationObserver;
 class ArrayBufferCollector;
@@ -364,9 +242,6 @@ class Heap {
   static const int kNoGCFlags = 0;
   static const int kReduceMemoryFootprintMask = 1;
 
-  // The roots that have an index less than this are always in old space.
-  static const int kOldSpaceRoots = 0x20;
-
   // The minimum size of a HeapObject on the heap.
   static const int kMinObjectSizeInWords = 2;
 
@@ -394,14 +269,8 @@ class Heap {
 
   void FatalProcessOutOfMemory(const char* location);
 
-  V8_EXPORT_PRIVATE static bool RootIsImmortalImmovable(RootIndex root_index);
-
   // Checks whether the space is valid.
   static bool IsValidAllocationSpace(AllocationSpace space);
-
-  // Generated code can embed direct references to non-writable roots if
-  // they are in new space.
-  static bool RootCanBeWrittenAfterInitialization(RootIndex root_index);
 
   // Zapping is needed for verify heap, and always done in debug builds.
   static inline bool ShouldZapGarbage() {
@@ -768,82 +637,33 @@ class Heap {
     return array_buffer_collector_;
   }
 
+  const IsolateData* isolate_data() const { return &isolate_data_; }
+  IsolateData* isolate_data() { return &isolate_data_; }
+
   // ===========================================================================
   // Root set access. ==========================================================
   // ===========================================================================
-  friend class ReadOnlyRoots;
 
- public:
-  RootsTable& roots_table() { return roots_; }
+  // Shortcut to the roots table stored in |isolate_data_|.
+  V8_INLINE const RootsTable& roots_table() const {
+    return isolate_data_.roots();
+  }
+  V8_INLINE RootsTable& roots_table() { return isolate_data_.roots(); }
 
 // Heap root getters.
 #define ROOT_ACCESSOR(type, name, CamelName) inline type* name();
   MUTABLE_ROOT_LIST(ROOT_ACCESSOR)
 #undef ROOT_ACCESSOR
 
-  Object* root(RootIndex index) { return roots_[index]; }
-  Handle<Object> root_handle(RootIndex index) {
-    return Handle<Object>(&roots_[index]);
-  }
-
-  bool IsRootHandleLocation(Object** handle_location, RootIndex* index) const {
-    return roots_.IsRootHandleLocation(handle_location, index);
-  }
-
-  template <typename T>
-  bool IsRootHandle(Handle<T> handle, RootIndex* index) const {
-    return roots_.IsRootHandle(handle, index);
-  }
-
-  // Generated code can embed this address to get access to the roots.
-  Object** roots_array_start() { return roots_.roots_; }
-
-  ExternalReferenceTable* external_reference_table() {
-    DCHECK(external_reference_table_.is_initialized());
-    return &external_reference_table_;
-  }
-
-  static constexpr int roots_to_external_reference_table_offset() {
-    return kRootsExternalReferenceTableOffset;
-  }
-
-  static constexpr int roots_to_builtins_offset() {
-    return kRootsBuiltinsOffset;
-  }
-
-  static constexpr int root_register_addressable_end_offset() {
-    return kRootRegisterAddressableEndOffset;
-  }
-
-  Address root_register_addressable_end() {
-    return reinterpret_cast<Address>(roots_array_start()) +
-           kRootRegisterAddressableEndOffset;
-  }
-
   // Sets the stub_cache_ (only used when expanding the dictionary).
-  void SetRootCodeStubs(SimpleNumberDictionary* value);
+  V8_INLINE void SetRootCodeStubs(SimpleNumberDictionary* value);
+  V8_INLINE void SetRootMaterializedObjects(FixedArray* objects);
+  V8_INLINE void SetRootScriptList(Object* value);
+  V8_INLINE void SetRootStringTable(StringTable* value);
+  V8_INLINE void SetRootNoScriptSharedFunctionInfos(Object* value);
+  V8_INLINE void SetMessageListeners(TemplateList* value);
 
-  void SetRootMaterializedObjects(FixedArray* objects) {
-    roots_[RootIndex::kMaterializedObjects] = objects;
-  }
-
-  void SetRootScriptList(Object* value) {
-    roots_[RootIndex::kScriptList] = value;
-  }
-
-  void SetRootStringTable(StringTable* value) {
-    roots_[RootIndex::kStringTable] = value;
-  }
-
-  void SetRootNoScriptSharedFunctionInfos(Object* value) {
-    roots_[RootIndex::kNoScriptSharedFunctionInfos] = value;
-  }
-
-  void SetMessageListeners(TemplateList* value) {
-    roots_[RootIndex::kMessageListeners] = value;
-  }
-
-  // Set the stack limit in the roots_ array.  Some architectures generate
+  // Set the stack limit in the roots table.  Some architectures generate
   // code that looks here, because it is faster than loading from the static
   // jslimit_/real_jslimit_ variable in the StackGuard.
   void SetStackLimits();
@@ -851,9 +671,6 @@ class Heap {
   // The stack limit is thread-dependent. To be able to reproduce the same
   // snapshot blob, we need to reset it before serializing.
   void ClearStackLimits();
-
-  // Generated code can treat direct references to this root as constant.
-  bool RootCanBeTreatedAsConstant(RootIndex root_index);
 
   void RegisterStrongRoots(Object** start, Object** end);
   void UnregisterStrongRoots(Object** start);
@@ -916,6 +733,9 @@ class Heap {
   // Builtins. =================================================================
   // ===========================================================================
 
+  // Shortcut to the builtins table stored in |isolate_data_|.
+  V8_INLINE Object** builtins_table() { return isolate_data_.builtins(); }
+
   Code* builtin(int index);
   Address builtin_address(int index);
   void set_builtin(int index, HeapObject* builtin);
@@ -924,7 +744,14 @@ class Heap {
   // Iterators. ================================================================
   // ===========================================================================
 
+  // None of these methods iterate over the read-only roots. To do this use
+  // ReadOnlyRoots::Iterate. Read-only root iteration is not necessary for
+  // garbage collection and is usually only performed as part of
+  // (de)serialization or heap verification.
+
+  // Iterates over the strong roots and the weak roots.
   void IterateRoots(RootVisitor* v, VisitMode mode);
+  // Iterates over the strong roots.
   void IterateStrongRoots(RootVisitor* v, VisitMode mode);
   // Iterates over entries in the smi roots list.  Only interesting to the
   // serializer/deserializer, since GC does not care about smis.
@@ -1046,7 +873,7 @@ class Heap {
   EmbedderHeapTracer* GetEmbedderHeapTracer() const;
 
   void TracePossibleWrapper(JSObject* js_object);
-  void RegisterExternallyReferencedObject(Object** object);
+  void RegisterExternallyReferencedObject(Address* location);
   void SetEmbedderStackStateForNextFinalizaton(
       EmbedderHeapTracer::EmbedderStackState stack_state);
 
@@ -1930,28 +1757,7 @@ class Heap {
   // more expedient to get at the isolate directly from within Heap methods.
   Isolate* isolate_ = nullptr;
 
-  RootsTable roots_;
-
-  // This table is accessed from builtin code compiled into the snapshot, and
-  // thus its offset from roots_ must remain static. This is verified in
-  // Isolate::Init() using runtime checks.
-  static constexpr int kRootsExternalReferenceTableOffset =
-      static_cast<int>(RootIndex::kRootListLength) * kPointerSize;
-  ExternalReferenceTable external_reference_table_;
-
-  // As external references above, builtins are accessed through an offset from
-  // the roots register. Its offset from roots_ must remain static. This is
-  // verified in Isolate::Init() using runtime checks.
-  static constexpr int kRootsBuiltinsOffset =
-      kRootsExternalReferenceTableOffset +
-      ExternalReferenceTable::SizeInBytes();
-  Object* builtins_[Builtins::builtin_count];
-
-  // kRootRegister may be used to address any location that starts at the
-  // Isolate and ends at this point. Fields past this point are not guaranteed
-  // to live at a static offset from kRootRegister.
-  static constexpr int kRootRegisterAddressableEndOffset =
-      kRootsBuiltinsOffset + Builtins::builtin_count * kPointerSize;
+  IsolateData isolate_data_;
 
   size_t code_range_size_ = 0;
   size_t max_semi_space_size_ = 8 * (kPointerSize / 4) * MB;
@@ -2227,6 +2033,7 @@ class Heap {
   friend class ObjectStatsCollector;
   friend class Page;
   friend class PagedSpace;
+  friend class ReadOnlyRoots;
   friend class Scavenger;
   friend class ScavengerCollector;
   friend class Space;
@@ -2330,7 +2137,7 @@ class CodePageMemoryModificationScope {
 
   // Disallow any GCs inside this scope, as a relocation of the underlying
   // object would change the {MemoryChunk} that this scope targets.
-  DisallowHeapAllocation no_heap_allocation_;
+  DISALLOW_HEAP_ALLOCATION(no_heap_allocation_);
 };
 
 // Visitor class to verify interior pointers in spaces that do not contain
@@ -2421,7 +2228,7 @@ class HeapIterator {
  private:
   HeapObject* NextObject();
 
-  DisallowHeapAllocation no_heap_allocation_;
+  DISALLOW_HEAP_ALLOCATION(no_heap_allocation_);
 
   Heap* heap_;
   HeapObjectsFiltering filtering_;

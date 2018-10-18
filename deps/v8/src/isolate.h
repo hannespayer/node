@@ -999,10 +999,29 @@ class Isolate : private HiddenFactory {
   StackGuard* stack_guard() { return &stack_guard_; }
   Heap* heap() { return &heap_; }
 
+  const IsolateData* isolate_data() const { return heap_.isolate_data(); }
+  IsolateData* isolate_data() { return heap_.isolate_data(); }
+
+  RootsTable& roots_table() { return isolate_data()->roots(); }
+
+  // Generated code can embed this address to get access to the roots.
+  Object** roots_array_start() { return roots_table().roots_; }
+
   // kRootRegister may be used to address any location that falls into this
   // region. Fields outside this region are not guaranteed to live at a static
   // offset from kRootRegister.
   inline base::AddressRegion root_register_addressable_region();
+
+  Object* root(RootIndex index) { return roots_table()[index]; }
+
+  Handle<Object> root_handle(RootIndex index) {
+    return Handle<Object>(&roots_table()[index]);
+  }
+
+  ExternalReferenceTable* external_reference_table() {
+    DCHECK(isolate_data()->external_reference_table()->is_initialized());
+    return isolate_data()->external_reference_table();
+  }
 
   StubCache* load_stub_cache() { return load_stub_cache_; }
   StubCache* store_stub_cache() { return store_stub_cache_; }
@@ -1182,6 +1201,7 @@ class Isolate : private HiddenFactory {
   }
 
 #ifdef V8_INTL_SUPPORT
+#if USE_CHROMIUM_ICU == 0 && U_ICU_VERSION_MAJOR_NUM < 63
   icu::RegexMatcher* language_singleton_regexp_matcher() {
     return language_singleton_regexp_matcher_;
   }
@@ -1193,6 +1213,7 @@ class Isolate : private HiddenFactory {
   icu::RegexMatcher* language_variant_regexp_matcher() {
     return language_variant_regexp_matcher_;
   }
+#endif  // USE_CHROMIUM_ICU == 0 && U_ICU_VERSION_MAJOR_NUM < 63
 
   const std::string& default_locale() { return default_locale_; }
 
@@ -1201,6 +1222,7 @@ class Isolate : private HiddenFactory {
     default_locale_ = locale;
   }
 
+#if USE_CHROMIUM_ICU == 0 && U_ICU_VERSION_MAJOR_NUM < 63
   void set_language_tag_regexp_matchers(
       icu::RegexMatcher* language_singleton_regexp_matcher,
       icu::RegexMatcher* language_tag_regexp_matcher,
@@ -1212,6 +1234,7 @@ class Isolate : private HiddenFactory {
     language_tag_regexp_matcher_ = language_tag_regexp_matcher;
     language_variant_regexp_matcher_ = language_variant_regexp_matcher;
   }
+#endif  // USE_CHROMIUM_ICU == 0 && U_ICU_VERSION_MAJOR_NUM < 63
 #endif  // V8_INTL_SUPPORT
 
   static const int kProtectorValid = 1;
@@ -1233,7 +1256,31 @@ class Isolate : private HiddenFactory {
   inline bool IsStringLengthOverflowIntact();
   inline bool IsArrayIteratorLookupChainIntact();
 
-  // The StringIteratorProtector protects the original string iterating behavior
+  // The MapIterator protector protects the original iteration behaviors of
+  // Map.prototype.keys(), Map.prototype.values(), and Set.prototype.entries().
+  // It does not protect the original iteration behavior of
+  // Map.prototype[Symbol.iterator](). The protector is invalidated when:
+  // * The 'next' property is set on an object where the property holder is the
+  //   %MapIteratorPrototype% (e.g. because the object is that very prototype).
+  // * The 'Symbol.iterator' property is set on an object where the property
+  //   holder is the %IteratorPrototype%. Note that this also invalidates the
+  //   SetIterator protector (see below).
+  inline bool IsMapIteratorLookupChainIntact();
+
+  // The SetIterator protector protects the original iteration behavior of
+  // Set.prototype.keys(), Set.prototype.values(), Set.prototype.entries(),
+  // and Set.prototype[Symbol.iterator](). The protector is invalidated when:
+  // * The 'next' property is set on an object where the property holder is the
+  //   %SetIteratorPrototype% (e.g. because the object is that very prototype).
+  // * The 'Symbol.iterator' property is set on an object where the property
+  //   holder is the %SetPrototype% OR %IteratorPrototype%. This means that
+  //   setting Symbol.iterator on a MapIterator object can also invalidate the
+  //   SetIterator protector, and vice versa, setting Symbol.iterator on a
+  //   SetIterator object can also invalidate the MapIterator. This is an over-
+  //   approximation for the sake of simplicity.
+  inline bool IsSetIteratorLookupChainIntact();
+
+  // The StringIteratorProtector protects the original string iteration behavior
   // for primitive strings. As long as the StringIteratorProtector is valid,
   // iterating over a primitive string is guaranteed to be unobservable from
   // user code and can thus be cut short. More specifically, the protector gets
@@ -1285,6 +1332,8 @@ class Isolate : private HiddenFactory {
   void InvalidateIsConcatSpreadableProtector();
   void InvalidateStringLengthOverflowProtector();
   void InvalidateArrayIteratorProtector();
+  void InvalidateMapIteratorProtector();
+  void InvalidateSetIteratorProtector();
   void InvalidateStringIteratorProtector();
   void InvalidateArrayBufferNeuteringProtector();
   V8_EXPORT_PRIVATE void InvalidatePromiseHookProtector();
@@ -1386,7 +1435,7 @@ class Isolate : private HiddenFactory {
   void SetUseCounterCallback(v8::Isolate::UseCounterCallback callback);
   void CountUsage(v8::Isolate::UseCounterFeature feature);
 
-  std::string GetTurboCfgFileName();
+  static std::string GetTurboCfgFileName(Isolate* isolate);
 
 #if V8_SFI_HAS_UNIQUE_ID
   int GetNextUniqueSharedFunctionInfoId() { return next_unique_sfi_id_++; }
@@ -1422,6 +1471,10 @@ class Isolate : private HiddenFactory {
 
   void AddDetachedContext(Handle<Context> context);
   void CheckDetachedContextsAfterGC();
+
+  std::vector<Object*>* read_only_object_cache() {
+    return &read_only_object_cache_;
+  }
 
   std::vector<Object*>* partial_snapshot_cache() {
     return &partial_snapshot_cache_;
@@ -1730,9 +1783,11 @@ class Isolate : private HiddenFactory {
   double load_start_time_ms_;
 
 #ifdef V8_INTL_SUPPORT
+#if USE_CHROMIUM_ICU == 0 && U_ICU_VERSION_MAJOR_NUM < 63
   icu::RegexMatcher* language_singleton_regexp_matcher_;
   icu::RegexMatcher* language_tag_regexp_matcher_;
   icu::RegexMatcher* language_variant_regexp_matcher_;
+#endif  // USE_CHROMIUM_ICU == 0 && U_ICU_VERSION_MAJOR_NUM < 63
   std::string default_locale_;
 #endif  // V8_INTL_SUPPORT
 
@@ -1829,6 +1884,7 @@ class Isolate : private HiddenFactory {
 
   v8::Isolate::UseCounterCallback use_counter_callback_;
 
+  std::vector<Object*> read_only_object_cache_;
   std::vector<Object*> partial_snapshot_cache_;
 
   // Used during builtins compilation to build the builtins constants table,
@@ -1857,6 +1913,7 @@ class Isolate : private HiddenFactory {
 
   bool allow_atomics_wait_;
 
+  base::Mutex managed_ptr_destructors_mutex_;
   ManagedPtrDestructor* managed_ptr_destructors_head_ = nullptr;
 
   size_t total_regexp_code_generated_;

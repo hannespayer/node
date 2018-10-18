@@ -16,6 +16,7 @@
 #include "src/parsing/parser-base.h"
 #include "src/parsing/parsing.h"
 #include "src/parsing/preparser.h"
+#include "src/pointer-with-payload.h"
 #include "src/zone/zone-chunk-list.h"
 
 namespace v8 {
@@ -87,20 +88,25 @@ struct ParserFormalParameters : FormalParametersBase {
               Expression* initializer, int position,
               int initializer_end_position, bool is_rest)
         : name(name),
+          name_and_is_rest(initializer, is_rest),
           pattern(pattern),
-          initializer(initializer),
           position(position),
-          initializer_end_position(initializer_end_position),
-          is_rest(is_rest) {}
+          initializer_end_position(initializer_end_position) {}
+
     const AstRawString* name;
+
+    PointerWithPayload<Expression, bool, 1> name_and_is_rest;
+
     Expression* pattern;
-    Expression* initializer;
+    Expression* initializer() const { return name_and_is_rest.GetPointer(); }
     int position;
     int initializer_end_position;
-    bool is_rest;
+    inline bool is_rest() const { return name_and_is_rest.GetPayload(); }
+
     Parameter* next_parameter = nullptr;
     bool is_simple() const {
-      return pattern->IsVariableProxy() && initializer == nullptr && !is_rest;
+      return pattern->IsVariableProxy() && initializer() == nullptr &&
+             !is_rest();
     }
 
     Parameter** next() { return &next_parameter; }
@@ -269,6 +275,7 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
   void ParseImportDeclaration(bool* ok);
   Statement* ParseExportDeclaration(bool* ok);
   Statement* ParseExportDefault(bool* ok);
+  void ParseExportStar(bool* ok);
   struct ExportClauseData {
     const AstRawString* export_name;
     const AstRawString* local_name;
@@ -305,6 +312,8 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
                                  Block* finally_block,
                                  const SourceRange& finally_range,
                                  const CatchInfo& catch_info, int pos);
+  void GetUnexpectedTokenMessage(Token::Value token, MessageTemplate* message,
+                                 Scanner::Location* location, const char** arg);
   void ParseAndRewriteGeneratorFunctionBody(int pos, FunctionKind kind,
                                             ZonePtrList<Statement>* body,
                                             bool* ok);
@@ -461,8 +470,8 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
                     FunctionLiteral::FunctionType function_type,
                     DeclarationScope* function_scope, int* num_parameters,
                     ProducedPreParsedScopeData** produced_preparsed_scope_data,
-                    bool is_inner_function, bool may_abort,
-                    FunctionLiteral::EagerCompileHint* hint, bool* ok);
+                    bool may_abort, FunctionLiteral::EagerCompileHint* hint,
+                    bool* ok);
 
   Block* BuildParameterInitializationBlock(
       const ParserFormalParameters& parameters, bool* ok);
@@ -547,15 +556,12 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
 
   Expression* BuildInitialYield(int pos, FunctionKind kind);
   Assignment* BuildCreateJSGeneratorObject(int pos, FunctionKind kind);
-  Expression* BuildResolvePromise(Expression* value, int pos);
-  Expression* BuildRejectPromise(Expression* value, int pos);
-  Variable* PromiseVariable();
   Variable* AsyncGeneratorAwaitVariable();
 
   // Generic AST generator for throwing errors from compiled code.
   Expression* NewThrowError(Runtime::FunctionId function_id,
-                            MessageTemplate::Template message,
-                            const AstRawString* arg, int pos);
+                            MessageTemplate message, const AstRawString* arg,
+                            int pos);
 
   void FinalizeIteratorUse(Variable* completion, Expression* condition,
                            Variable* iter, Block* iterator_use, Block* result,
@@ -585,6 +591,10 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
   // Helper functions for recursive descent.
   V8_INLINE bool IsEval(const AstRawString* identifier) const {
     return identifier == ast_value_factory()->eval_string();
+  }
+
+  V8_INLINE bool IsAsync(const AstRawString* identifier) const {
+    return identifier == ast_value_factory()->async_string();
   }
 
   V8_INLINE bool IsArguments(const AstRawString* identifier) const {
@@ -712,6 +722,8 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
     }
   }
 
+  V8_INLINE static void MarkPatternAsAssigned(Expression* expression) {}
+
   // Determine if the expression is a variable proxy and mark it as being used
   // in an assignment or with a increment/decrement operator.
   V8_INLINE static void MarkExpressionAsAssigned(Expression* expression) {
@@ -753,8 +765,8 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
                                    int pos);
 
   // Generate AST node that throws a ReferenceError with the given type.
-  V8_INLINE Expression* NewThrowReferenceError(
-      MessageTemplate::Template message, int pos) {
+  V8_INLINE Expression* NewThrowReferenceError(MessageTemplate message,
+                                               int pos) {
     return NewThrowError(Runtime::kNewReferenceError, message,
                          ast_value_factory()->empty_string(), pos);
   }
@@ -762,22 +774,21 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
   // Generate AST node that throws a SyntaxError with the given
   // type. The first argument may be null (in the handle sense) in
   // which case no arguments are passed to the constructor.
-  V8_INLINE Expression* NewThrowSyntaxError(MessageTemplate::Template message,
+  V8_INLINE Expression* NewThrowSyntaxError(MessageTemplate message,
                                             const AstRawString* arg, int pos) {
     return NewThrowError(Runtime::kNewSyntaxError, message, arg, pos);
   }
 
   // Generate AST node that throws a TypeError with the given
   // type. Both arguments must be non-null (in the handle sense).
-  V8_INLINE Expression* NewThrowTypeError(MessageTemplate::Template message,
+  V8_INLINE Expression* NewThrowTypeError(MessageTemplate message,
                                           const AstRawString* arg, int pos) {
     return NewThrowError(Runtime::kNewTypeError, message, arg, pos);
   }
 
   // Reporting errors.
   void ReportMessageAt(Scanner::Location source_location,
-                       MessageTemplate::Template message,
-                       const char* arg = nullptr,
+                       MessageTemplate message, const char* arg = nullptr,
                        ParseErrorType error_type = kSyntaxError) {
     if (stack_overflow()) {
       // Suppress the error message (syntax error or such) in the presence of a
@@ -796,8 +807,7 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
   V8_INLINE void ReportUnidentifiableError() { UNREACHABLE(); }
 
   void ReportMessageAt(Scanner::Location source_location,
-                       MessageTemplate::Template message,
-                       const AstRawString* arg,
+                       MessageTemplate message, const AstRawString* arg,
                        ParseErrorType error_type = kSyntaxError) {
     if (stack_overflow()) {
       // Suppress the error message (syntax error or such) in the presence of a
@@ -872,12 +882,6 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
     return NewUnresolved(name, start_position);
   }
 
-  V8_INLINE Expression* ExpressionFromString(int pos) {
-    const AstRawString* symbol = GetSymbol();
-    fni_.PushLiteralName(symbol);
-    return factory()->NewStringLiteral(symbol, pos);
-  }
-
   V8_INLINE ZonePtrList<Expression>* NewExpressionList(int size) const {
     return new (zone()) ZonePtrList<Expression>(size, zone());
   }
@@ -902,18 +906,6 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
         factory()->NewThrow(exception, pos), pos);
   }
 
-  V8_INLINE void AddParameterInitializationBlock(
-      const ParserFormalParameters& parameters, ZonePtrList<Statement>* body,
-      bool is_async, bool* ok) {
-    if (parameters.is_simple) return;
-    auto* init_block = BuildParameterInitializationBlock(parameters, ok);
-    if (!*ok) return;
-    if (is_async) {
-      init_block = BuildRejectPromiseOnException(init_block);
-    }
-    body->Add(init_block, zone());
-  }
-
   V8_INLINE void AddFormalParameter(ParserFormalParameters* parameters,
                                     Expression* pattern,
                                     Expression* initializer,
@@ -933,20 +925,25 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
   }
 
   V8_INLINE void DeclareFormalParameters(
-      DeclarationScope* scope,
-      const base::ThreadedList<ParserFormalParameters::Parameter>& parameters,
-      bool is_simple, bool* has_duplicate = nullptr) {
+      const ParserFormalParameters* parameters) {
+    bool is_simple = parameters->is_simple;
+    DeclarationScope* scope = parameters->scope;
     if (!is_simple) scope->SetHasNonSimpleParameters();
-    for (auto parameter : parameters) {
-      bool is_optional = parameter->initializer != nullptr;
+    for (auto parameter : parameters->params) {
+      bool is_optional = parameter->initializer() != nullptr;
       // If the parameter list is simple, declare the parameters normally with
       // their names. If the parameter list is not simple, declare a temporary
       // for each parameter - the corresponding named variable is declared by
       // BuildParamerterInitializationBlock.
+      if (is_simple && scope->LookupLocal(parameter->name)) {
+        classifier()->RecordDuplicateFormalParameterError(
+            Scanner::Location(parameter->position,
+                              parameter->position + parameter->name->length()));
+      }
       scope->DeclareParameter(
           is_simple ? parameter->name : ast_value_factory()->empty_string(),
           is_simple ? VariableMode::kVar : VariableMode::kTemporary,
-          is_optional, parameter->is_rest, has_duplicate, ast_value_factory(),
+          is_optional, parameter->is_rest(), ast_value_factory(),
           parameter->position);
     }
   }
@@ -954,7 +951,6 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
   void DeclareArrowFunctionFormalParameters(ParserFormalParameters* parameters,
                                             Expression* params,
                                             const Scanner::Location& params_loc,
-                                            Scanner::Location* duplicate_loc,
                                             bool* ok);
 
   Expression* ExpressionListToExpression(ZonePtrList<Expression>* args);
@@ -1104,9 +1100,16 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
         node, new (zone()) TryFinallyStatementSourceRanges(body_range));
   }
 
+  // Generate the next internal variable name for binding an exported namespace
+  // object (used to implement the "export * as" syntax).
+  const AstRawString* NextInternalNamespaceExportName();
+
+  ParseInfo* info() const { return info_; }
+
   // Parser's private field members.
   friend class PreParserZoneScope;  // Uses reusable_preparser().
 
+  ParseInfo* info_;
   Scanner scanner_;
   Zone preparser_zone_;
   PreParser* reusable_preparser_;
@@ -1119,6 +1122,9 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
   ParserTarget* target_stack_;  // for break, continue statements
 
   ScriptCompiler::CompileOptions compile_options_;
+
+  // For NextInternalNamespaceExportName().
+  int number_of_named_namespace_exports_ = 0;
 
   // Other information which will be stored in Parser and moved to Isolate after
   // parsing.

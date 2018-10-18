@@ -29,10 +29,9 @@ bool HandleBase::IsDereferenceAllowed(DereferenceCheckMode mode) const {
   HeapObject* heap_object = HeapObject::cast(object);
   Isolate* isolate;
   if (!Isolate::FromWritableHeapObject(heap_object, &isolate)) return true;
-  Heap* heap = isolate->heap();
   RootIndex root_index;
-  if (heap->IsRootHandleLocation(location_, &root_index) &&
-      heap->RootCanBeTreatedAsConstant(root_index)) {
+  if (isolate->roots_table().IsRootHandleLocation(location_, &root_index) &&
+      RootsTable::IsImmortalImmovable(root_index)) {
     return true;
   }
   if (!AllowHandleDereference::IsAllowed()) return false;
@@ -157,7 +156,7 @@ Object** CanonicalHandleScope::Lookup(Object* object) {
   if (object->IsHeapObject()) {
     RootIndex root_index;
     if (root_index_map_->Lookup(HeapObject::cast(object), &root_index)) {
-      return isolate_->heap()->root_handle(root_index).location();
+      return isolate_->root_handle(root_index).location();
     }
   }
   Object*** entry = identity_map_->Get(object);

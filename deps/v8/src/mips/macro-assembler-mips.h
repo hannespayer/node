@@ -37,6 +37,7 @@ constexpr Register kRuntimeCallFunctionRegister = a1;
 constexpr Register kRuntimeCallArgCountRegister = a0;
 constexpr Register kRuntimeCallArgvRegister = a2;
 constexpr Register kWasmInstanceRegister = a0;
+constexpr Register kWasmCompileLazyFuncIndexRegister = t0;
 
 // Forward declarations
 enum class AbortReason : uint8_t;
@@ -58,12 +59,6 @@ enum class AbortReason : uint8_t;
 enum LeaveExitFrameMode {
   EMIT_RETURN = true,
   NO_EMIT_RETURN = false
-};
-
-// Allow programmer to use Branch Delay Slot of Branches, Jumps, Calls.
-enum BranchDelaySlot {
-  USE_DELAY_SLOT,
-  PROTECT
 };
 
 // Flags used for the li macro-assembler function.
@@ -581,6 +576,15 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   void SubPair(Register dst_low, Register dst_high, Register left_low,
                Register left_high, Register right_low, Register right_high,
                Register scratch1, Register scratch2);
+
+  void AndPair(Register dst_low, Register dst_high, Register left_low,
+               Register left_high, Register right_low, Register right_high);
+
+  void OrPair(Register dst_low, Register dst_high, Register left_low,
+              Register left_high, Register right_low, Register right_high);
+
+  void XorPair(Register dst_low, Register dst_high, Register left_low,
+               Register left_high, Register right_low, Register right_high);
 
   void MulPair(Register dst_low, Register dst_high, Register left_low,
                Register left_high, Register right_low, Register right_high,

@@ -14,6 +14,9 @@
 // No-op macro which is used to work around MSVC's funky VA_ARGS support.
 #define EXPAND(x) x
 
+// This macro does nothing. That's all.
+#define NOTHING(...)
+
 // TODO(all) Replace all uses of this macro with C++'s offsetof. To do that, we
 // have to make sure that only standard-layout types and simple field
 // designators are used.
@@ -276,6 +279,12 @@ struct Use {
     ::v8::base::Use unused_tmp_array_for_use_macro[]{__VA_ARGS__}; \
     (void)unused_tmp_array_for_use_macro;                          \
   } while (false)
+
+// Evaluate the instantiations of an expression with parameter packs.
+// Since USE has left-to-right evaluation order of it's arguments,
+// the parameter pack is iterated from left to right and side effects
+// have defined behavior.
+#define ITERATE_PACK(...) USE(0, ((__VA_ARGS__), 0)...)
 
 }  // namespace base
 }  // namespace v8

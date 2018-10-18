@@ -24,7 +24,6 @@
 #include "src/field-index-inl.h"
 #include "src/handles-inl.h"
 #include "src/heap/factory.h"
-#include "src/heap/heap-inl.h"
 #include "src/isolate-inl.h"
 #include "src/keys.h"
 #include "src/layout-descriptor-inl.h"
@@ -148,7 +147,7 @@ bool HeapObject::IsJSSloppyArgumentsObject() const {
 
 bool HeapObject::IsJSGeneratorObject() const {
   return map()->instance_type() == JS_GENERATOR_OBJECT_TYPE ||
-         IsJSAsyncGeneratorObject();
+         IsJSAsyncFunctionObject() || IsJSAsyncGeneratorObject();
 }
 
 bool HeapObject::IsDataHandler() const {
@@ -696,7 +695,7 @@ MaybeHandle<Object> Object::ToLength(Isolate* isolate, Handle<Object> input) {
 
 // static
 MaybeHandle<Object> Object::ToIndex(Isolate* isolate, Handle<Object> input,
-                                    MessageTemplate::Template error_index) {
+                                    MessageTemplate error_index) {
   if (input->IsSmi() && Smi::ToInt(*input) >= 0) return input;
   return ConvertToIndex(isolate, input, error_index);
 }
@@ -794,7 +793,6 @@ Isolate* NeverReadOnlySpaceObject::GetIsolate() const {
 Map* HeapObject::map() const {
   return map_word().ToMap();
 }
-
 
 void HeapObject::set_map(Map* value) {
   if (value != nullptr) {
@@ -1460,20 +1458,22 @@ int FreeSpace::Size() { return size(); }
 
 
 FreeSpace* FreeSpace::next() {
-  DCHECK(map() == Heap::FromWritableHeapObject(this)->root(
-                      RootIndex::kFreeSpaceMap) ||
-         (!Heap::FromWritableHeapObject(this)->deserialization_complete() &&
-          map() == nullptr));
+#ifdef DEBUG
+  Heap* heap = Heap::FromWritableHeapObject(this);
+  DCHECK_IMPLIES(map() != heap->isolate()->root(RootIndex::kFreeSpaceMap),
+                 !heap->deserialization_complete() && map() == nullptr);
+#endif
   DCHECK_LE(kNextOffset + kPointerSize, relaxed_read_size());
   return reinterpret_cast<FreeSpace*>(Memory<Address>(address() + kNextOffset));
 }
 
 
 void FreeSpace::set_next(FreeSpace* next) {
-  DCHECK(map() == Heap::FromWritableHeapObject(this)->root(
-                      RootIndex::kFreeSpaceMap) ||
-         (!Heap::FromWritableHeapObject(this)->deserialization_complete() &&
-          map() == nullptr));
+#ifdef DEBUG
+  Heap* heap = Heap::FromWritableHeapObject(this);
+  DCHECK_IMPLIES(map() != heap->isolate()->root(RootIndex::kFreeSpaceMap),
+                 !heap->deserialization_complete() && map() == nullptr);
+#endif
   DCHECK_LE(kNextOffset + kPointerSize, relaxed_read_size());
   base::Relaxed_Store(
       reinterpret_cast<base::AtomicWord*>(address() + kNextOffset),
@@ -1944,8 +1944,7 @@ Object* Object::GetHash() {
 
   DCHECK(IsJSReceiver());
   JSReceiver* receiver = JSReceiver::cast(this);
-  Isolate* isolate = receiver->GetIsolate();
-  return receiver->GetIdentityHash(isolate);
+  return receiver->GetIdentityHash();
 }
 
 Handle<Object> ObjectHashTableShape::AsHandle(Handle<Object> key) {

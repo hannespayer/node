@@ -249,6 +249,8 @@ class RecordWriteCodeStubAssembler : public CodeStubAssembler {
 
   void GetMarkBit(Node* object, Node** cell, Node** mask) {
     Node* page = WordAnd(object, IntPtrConstant(~kPageAlignmentMask));
+    Node* bitmap = Load(MachineType::Pointer(), page,
+                        IntPtrConstant(MemoryChunk::kMarkBitmapOffset));
 
     {
       // Temp variable to calculate cell offset in bitmap.
@@ -258,8 +260,7 @@ class RecordWriteCodeStubAssembler : public CodeStubAssembler {
       r0 = WordShr(object, IntPtrConstant(shift));
       r0 = WordAnd(r0, IntPtrConstant((kPageAlignmentMask >> shift) &
                                       ~(Bitmap::kBytesPerCell - 1)));
-      *cell = IntPtrAdd(IntPtrAdd(page, r0),
-                        IntPtrConstant(MemoryChunk::kHeaderSize));
+      *cell = IntPtrAdd(bitmap, r0);
     }
     {
       // Temp variable to calculate bit offset in cell.
@@ -474,7 +475,7 @@ class DeletePropertyBaseAssembler : public AccessorAssembler {
            dont_delete);
     // Overwrite the entry itself (see NameDictionary::SetEntry).
     TNode<HeapObject> filler = TheHoleConstant();
-    DCHECK(Heap::RootIsImmortalImmovable(RootIndex::kTheHoleValue));
+    DCHECK(RootsTable::IsImmortalImmovable(RootIndex::kTheHoleValue));
     StoreFixedArrayElement(properties, key_index, filler, SKIP_WRITE_BARRIER);
     StoreValueByKeyIndex<NameDictionary>(properties, key_index, filler,
                                          SKIP_WRITE_BARRIER);
@@ -823,13 +824,15 @@ void InternalBuiltinsAssembler::RunPromiseHook(
   BIND(&hook);
   {
     // Get to the underlying JSPromise instance.
-    Node* const promise = Select<HeapObject>(
-        IsJSPromise(promise_or_capability),
-        [=] { return promise_or_capability; },
+    TNode<HeapObject> promise = Select<HeapObject>(
+        IsPromiseCapability(promise_or_capability),
         [=] {
           return CAST(LoadObjectField(promise_or_capability,
                                       PromiseCapability::kPromiseOffset));
-        });
+        },
+
+        [=] { return promise_or_capability; });
+    GotoIf(IsUndefined(promise), &done_hook);
     CallRuntime(id, context, promise);
     Goto(&done_hook);
   }
@@ -908,7 +911,7 @@ TF_BUILTIN(RunMicrotasks, InternalBuiltinsAssembler) {
   TNode<Context> current_context = GetCurrentContext();
   TNode<MicrotaskQueue> microtask_queue = GetDefaultMicrotaskQueue();
 
-  Label init_queue_loop(this);
+  Label init_queue_loop(this), done_init_queue_loop(this);
   Goto(&init_queue_loop);
   BIND(&init_queue_loop);
   {
@@ -916,7 +919,7 @@ TF_BUILTIN(RunMicrotasks, InternalBuiltinsAssembler) {
     Label loop(this, &index), loop_next(this);
 
     TNode<IntPtrT> num_tasks = GetPendingMicrotaskCount(microtask_queue);
-    ReturnIf(IntPtrEqual(num_tasks, IntPtrConstant(0)), UndefinedConstant());
+    GotoIf(IntPtrEqual(num_tasks, IntPtrConstant(0)), &done_init_queue_loop);
 
     TNode<FixedArray> queue = GetQueuedMicrotasks(microtask_queue);
 
@@ -936,6 +939,7 @@ TF_BUILTIN(RunMicrotasks, InternalBuiltinsAssembler) {
 
       CSA_ASSERT(this, TaggedIsNotSmi(microtask));
 
+      StoreRoot(RootIndex::kCurrentMicrotask, microtask);
       TNode<Map> microtask_map = LoadMap(microtask);
       TNode<Int32T> microtask_type = LoadMapInstanceType(microtask_map);
 
@@ -1117,6 +1121,13 @@ TF_BUILTIN(RunMicrotasks, InternalBuiltinsAssembler) {
       BIND(&loop_next);
       Branch(IntPtrLessThan(index.value(), num_tasks), &loop, &init_queue_loop);
     }
+  }
+
+  BIND(&done_init_queue_loop);
+  {
+    // Reset the "current microtask" on the isolate.
+    StoreRoot(RootIndex::kCurrentMicrotask, UndefinedConstant());
+    Return(UndefinedConstant());
   }
 }
 

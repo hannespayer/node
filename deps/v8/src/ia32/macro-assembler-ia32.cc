@@ -41,21 +41,48 @@ MacroAssembler::MacroAssembler(Isolate* isolate,
     code_object_ = Handle<HeapObject>::New(
         *isolate->factory()->NewSelfReferenceMarker(), isolate);
   }
+  // TODO(jgruber, v8:6666): Remove once root register is always available.
+  set_root_array_available(FLAG_embedded_builtins);
+}
 
-#ifdef V8_EMBEDDED_BUILTINS
-  // Fake it as long as we use indirections through an embedded external
-  // reference. This will let us implement indirections without a real
-  // root register.
-  // TODO(jgruber, v8:6666): Remove once a real root register exists.
-  if (FLAG_embedded_builtins) set_root_array_available(true);
-#endif  // V8_EMBEDDED_BUILTINS
+void TurboAssembler::InitializeRootRegister() {
+  // TODO(v8:6666): Initialize unconditionally once poisoning support has been
+  // removed.
+  if (!FLAG_embedded_builtins) return;
+
+  Assembler::AllowExplicitEbxAccessScope setup(this);
+  ExternalReference roots_array_start =
+      ExternalReference::roots_array_start(isolate());
+  Move(kRootRegister, Immediate(roots_array_start));
+  add(kRootRegister, Immediate(kRootRegisterBias));
+}
+
+void TurboAssembler::VerifyRootRegister() {
+  if (!FLAG_ia32_verify_root_register) return;
+
+  DCHECK(FLAG_embedded_builtins);
+
+  Assembler::AllowExplicitEbxAccessScope read_only_access(this);
+  Label root_register_ok;
+  cmp(Operand(kRootRegister,
+              IsolateData::kMagicNumberOffset - kRootRegisterBias),
+      Immediate(IsolateData::kRootRegisterSentinel));
+  j(equal, &root_register_ok);
+  int3();
+  bind(&root_register_ok);
 }
 
 void TurboAssembler::LoadRoot(Register destination, RootIndex index) {
-  // TODO(jgruber, v8:6666): Support loads through the root register once it
-  // exists.
-  if (isolate()->heap()->RootCanBeTreatedAsConstant(index)) {
-    Handle<Object> object = isolate()->heap()->root_handle(index);
+#ifdef V8_EMBEDDED_BUILTINS
+  if (root_array_available()) {
+    Assembler::AllowExplicitEbxAccessScope read_only_access(this);
+    mov(destination,
+        Operand(kRootRegister, RootRegisterOffsetForRootIndex(index)));
+    return;
+  }
+#endif  // V8_EMBEDDED_BUILTINS
+  if (RootsTable::IsImmortalImmovable(index)) {
+    Handle<Object> object = isolate()->root_handle(index);
     if (object->IsSmi()) {
       mov(destination, Immediate(Smi::cast(*object)));
       return;
@@ -68,21 +95,36 @@ void TurboAssembler::LoadRoot(Register destination, RootIndex index) {
   ExternalReference roots_array_start =
       ExternalReference::roots_array_start(isolate());
   mov(destination, Immediate(static_cast<int>(index)));
-  mov(destination,
-      StaticArray(destination, times_pointer_size, roots_array_start));
+  lea(destination,
+      Operand(destination, times_pointer_size, roots_array_start.address(),
+              RelocInfo::EXTERNAL_REFERENCE));
 }
 
-void MacroAssembler::CompareRoot(Register with, Register scratch,
+void TurboAssembler::CompareRoot(Register with, Register scratch,
                                  RootIndex index) {
+#ifdef V8_EMBEDDED_BUILTINS
+  if (root_array_available()) {
+    CompareRoot(with, index);
+    return;
+  }
+#endif  // V8_EMBEDDED_BUILTINS
   ExternalReference roots_array_start =
       ExternalReference::roots_array_start(isolate());
   mov(scratch, Immediate(static_cast<int>(index)));
-  cmp(with, StaticArray(scratch, times_pointer_size, roots_array_start));
+  cmp(with, Operand(scratch, times_pointer_size, roots_array_start.address(),
+                    RelocInfo::EXTERNAL_REFERENCE));
 }
 
-void MacroAssembler::CompareRoot(Register with, RootIndex index) {
-  DCHECK(isolate()->heap()->RootCanBeTreatedAsConstant(index));
-  Handle<Object> object = isolate()->heap()->root_handle(index);
+void TurboAssembler::CompareRoot(Register with, RootIndex index) {
+#ifdef V8_EMBEDDED_BUILTINS
+  if (root_array_available()) {
+    Assembler::AllowExplicitEbxAccessScope read_only_access(this);
+    cmp(with, Operand(kRootRegister, RootRegisterOffsetForRootIndex(index)));
+    return;
+  }
+#endif  // V8_EMBEDDED_BUILTINS
+  DCHECK(RootsTable::IsImmortalImmovable(index));
+  Handle<Object> object = isolate()->root_handle(index);
   if (object->IsHeapObject()) {
     cmp(with, Handle<HeapObject>::cast(object));
   } else {
@@ -90,19 +132,43 @@ void MacroAssembler::CompareRoot(Register with, RootIndex index) {
   }
 }
 
-void MacroAssembler::CompareRoot(Operand with, RootIndex index) {
-  DCHECK(isolate()->heap()->RootCanBeTreatedAsConstant(index));
-  Handle<Object> object = isolate()->heap()->root_handle(index);
-  if (object->IsHeapObject()) {
-    cmp(with, Handle<HeapObject>::cast(object));
-  } else {
-    cmp(with, Immediate(Smi::cast(*object)));
+void TurboAssembler::CompareStackLimit(Register with) {
+#ifdef V8_EMBEDDED_BUILTINS
+  if (root_array_available()) {
+    CompareRoot(with, RootIndex::kStackLimit);
+    return;
   }
+#endif
+  DCHECK(!options().isolate_independent_code);
+  ExternalReference ref = ExternalReference::address_of_stack_limit(isolate());
+  cmp(with, Operand(ref.address(), RelocInfo::EXTERNAL_REFERENCE));
+}
+
+void TurboAssembler::CompareRealStackLimit(Register with) {
+#ifdef V8_EMBEDDED_BUILTINS
+  if (root_array_available()) {
+    CompareRoot(with, RootIndex::kRealStackLimit);
+    return;
+  }
+#endif
+  DCHECK(!options().isolate_independent_code);
+  ExternalReference ref =
+      ExternalReference::address_of_real_stack_limit(isolate());
+  cmp(with, Operand(ref.address(), RelocInfo::EXTERNAL_REFERENCE));
 }
 
 void MacroAssembler::PushRoot(RootIndex index) {
-  DCHECK(isolate()->heap()->RootCanBeTreatedAsConstant(index));
-  Handle<Object> object = isolate()->heap()->root_handle(index);
+#ifdef V8_EMBEDDED_BUILTINS
+  if (root_array_available()) {
+    DCHECK(RootsTable::IsImmortalImmovable(index));
+    Assembler::AllowExplicitEbxAccessScope read_only_access(this);
+    push(Operand(kRootRegister, RootRegisterOffsetForRootIndex(index)));
+    return;
+  }
+#endif  // V8_EMBEDDED_BUILTINS
+  // TODO(v8:6666): Add a scratch register or remove all uses.
+  DCHECK(RootsTable::IsImmortalImmovable(index));
+  Handle<Object> object = isolate()->root_handle(index);
   if (object->IsHeapObject()) {
     Push(Handle<HeapObject>::cast(object));
   } else {
@@ -110,13 +176,71 @@ void MacroAssembler::PushRoot(RootIndex index) {
   }
 }
 
+Operand TurboAssembler::ExternalReferenceAsOperand(ExternalReference reference,
+                                                   Register scratch) {
+  // TODO(jgruber): Add support for enable_root_array_delta_access.
+  Assembler::AllowExplicitEbxAccessScope read_only_access(this);
+  if (root_array_available_ && options().isolate_independent_code) {
+    if (IsAddressableThroughRootRegister(isolate(), reference)) {
+      // Some external references can be efficiently loaded as an offset from
+      // kRootRegister.
+      intptr_t offset =
+          RootRegisterOffsetForExternalReference(isolate(), reference);
+      return Operand(kRootRegister, offset);
+    } else {
+      // Otherwise, do a memory load from the external reference table.
+      mov(scratch, Operand(kRootRegister,
+                           RootRegisterOffsetForExternalReferenceTableEntry(
+                               isolate(), reference)));
+      return Operand(scratch, 0);
+    }
+  }
+  Move(scratch, Immediate(reference));
+  return Operand(scratch, 0);
+}
+
+// TODO(v8:6666): If possible, refactor into a platform-independent function in
+// TurboAssembler.
+Operand TurboAssembler::ExternalReferenceAddressAsOperand(
+    ExternalReference reference) {
+  DCHECK(FLAG_embedded_builtins);
+  DCHECK(root_array_available());
+  DCHECK(options().isolate_independent_code);
+  Assembler::AllowExplicitEbxAccessScope read_only_access(this);
+  return Operand(
+      kRootRegister,
+      RootRegisterOffsetForExternalReferenceTableEntry(isolate(), reference));
+}
+
+// TODO(v8:6666): If possible, refactor into a platform-independent function in
+// TurboAssembler.
+Operand TurboAssembler::HeapObjectAsOperand(Handle<HeapObject> object) {
+  DCHECK(FLAG_embedded_builtins);
+  DCHECK(root_array_available());
+  Assembler::AllowExplicitEbxAccessScope read_only_access(this);
+
+  int builtin_index;
+  RootIndex root_index;
+  if (isolate()->roots_table().IsRootHandle(object, &root_index)) {
+    return Operand(kRootRegister, RootRegisterOffsetForRootIndex(root_index));
+  } else if (isolate()->builtins()->IsBuiltinHandle(object, &builtin_index)) {
+    return Operand(kRootRegister,
+                   RootRegisterOffsetForBuiltinIndex(builtin_index));
+  } else if (object.is_identical_to(code_object_) &&
+             Builtins::IsBuiltinId(maybe_builtin_index_)) {
+    return Operand(kRootRegister,
+                   RootRegisterOffsetForBuiltinIndex(maybe_builtin_index_));
+  } else {
+    // Objects in the constants table need an additional indirection, which
+    // cannot be represented as a single Operand.
+    UNREACHABLE();
+  }
+}
+
 void TurboAssembler::LoadFromConstantsTable(Register destination,
                                             int constant_index) {
   DCHECK(!is_ebx_addressable_);
-  DCHECK(isolate()->heap()->RootCanBeTreatedAsConstant(
-      RootIndex::kBuiltinsConstantsTable));
-  // TODO(jgruber): LoadRoot should be a register-relative load once we have
-  // the kRootRegister.
+  DCHECK(RootsTable::IsImmortalImmovable(RootIndex::kBuiltinsConstantsTable));
   LoadRoot(destination, RootIndex::kBuiltinsConstantsTable);
   mov(destination,
       FieldOperand(destination,
@@ -127,22 +251,25 @@ void TurboAssembler::LoadRootRegisterOffset(Register destination,
                                             intptr_t offset) {
   DCHECK(!is_ebx_addressable_);
   DCHECK(is_int32(offset));
-  // TODO(jgruber): Register-relative load once kRootRegister exists.
-  mov(destination, Immediate(ExternalReference::roots_array_start(isolate())));
-  if (offset != 0) {
-    add(destination, Immediate(offset));
+  DCHECK(root_array_available());
+  Assembler::AllowExplicitEbxAccessScope read_only_access(this);
+  if (offset == 0) {
+    mov(destination, kRootRegister);
+  } else {
+    lea(destination, Operand(kRootRegister, static_cast<int32_t>(offset)));
   }
 }
 
 void TurboAssembler::LoadRootRelative(Register destination, int32_t offset) {
   DCHECK(!is_ebx_addressable_);
-  // TODO(jgruber): Register-relative load once kRootRegister exists.
-  LoadRootRegisterOffset(destination, offset);
-  mov(destination, Operand(destination, 0));
+  DCHECK(root_array_available());
+  Assembler::AllowExplicitEbxAccessScope read_only_access(this);
+  mov(destination, Operand(kRootRegister, offset));
 }
 
 void TurboAssembler::LoadAddress(Register destination,
                                  ExternalReference source) {
+  // TODO(jgruber): Add support for enable_root_array_delta_access.
   if (FLAG_embedded_builtins) {
     if (root_array_available_ && options().isolate_independent_code) {
       IndirectLoadExternalReference(destination, source);
@@ -155,12 +282,6 @@ void TurboAssembler::LoadAddress(Register destination,
 Operand TurboAssembler::StaticVariable(const ExternalReference& ext) {
   // TODO(jgruber,v8:6666): Root-relative operand once kRootRegister exists.
   return Operand(ext.address(), RelocInfo::EXTERNAL_REFERENCE);
-}
-
-Operand TurboAssembler::StaticArray(Register index, ScaleFactor scale,
-                                    const ExternalReference& ext) {
-  // TODO(jgruber,v8:6666): Root-relative operand once kRootRegister exists.
-  return Operand(index, scale, ext.address(), RelocInfo::EXTERNAL_REFERENCE);
 }
 
 static constexpr Register saved_regs[] = {eax, ecx, edx};
@@ -393,7 +514,7 @@ void MacroAssembler::RecordWrite(Register object, Register address,
 
   // Count number of write barriers in generated code.
   isolate()->counters()->write_barriers_static()->Increment();
-  IncrementCounter(isolate()->counters()->write_barriers_dynamic(), 1);
+  IncrementCounter(isolate()->counters()->write_barriers_dynamic(), 1, value);
 
   // Clobber clobbered registers when running with the debug-code flag
   // turned on to provoke errors.
@@ -405,12 +526,15 @@ void MacroAssembler::RecordWrite(Register object, Register address,
 
 void MacroAssembler::MaybeDropFrames() {
   // Check whether we need to drop frames to restart a function on the stack.
+  Label dont_drop;
   ExternalReference restart_fp =
       ExternalReference::debug_restart_fp_address(isolate());
-  mov(eax, StaticVariable(restart_fp));
+  mov(eax, ExternalReferenceAsOperand(restart_fp, eax));
   test(eax, eax);
-  j(not_zero, BUILTIN_CODE(isolate(), FrameDropperTrampoline),
-    RelocInfo::CODE_TARGET);
+  j(zero, &dont_drop, Label::kNear);
+
+  Jump(BUILTIN_CODE(isolate(), FrameDropperTrampoline), RelocInfo::CODE_TARGET);
+  bind(&dont_drop);
 }
 
 void TurboAssembler::Cvtsi2ss(XMMRegister dst, Operand src) {
@@ -456,13 +580,13 @@ void TurboAssembler::Cvttss2ui(Register dst, Operand src, XMMRegister tmp) {
   bind(&done);
 }
 
-void TurboAssembler::Cvtui2sd(XMMRegister dst, Operand src) {
+void TurboAssembler::Cvtui2sd(XMMRegister dst, Operand src, Register scratch) {
   Label done;
   cmp(src, Immediate(0));
   ExternalReference uint32_bias = ExternalReference::address_of_uint32_bias();
   Cvtsi2sd(dst, src);
   j(not_sign, &done, Label::kNear);
-  addsd(dst, StaticVariable(uint32_bias));
+  addsd(dst, ExternalReferenceAsOperand(uint32_bias, scratch));
   bind(&done);
 }
 
@@ -612,6 +736,10 @@ void MacroAssembler::AssertGeneratorObject(Register object) {
     CmpInstanceType(map, JS_GENERATOR_OBJECT_TYPE);
     j(equal, &do_check, Label::kNear);
 
+    // Check if JSAsyncFunctionObject.
+    CmpInstanceType(map, JS_ASYNC_FUNCTION_OBJECT_TYPE);
+    j(equal, &do_check, Label::kNear);
+
     // Check if JSAsyncGeneratorObject
     CmpInstanceType(map, JS_ASYNC_GENERATOR_OBJECT_TYPE);
 
@@ -622,14 +750,15 @@ void MacroAssembler::AssertGeneratorObject(Register object) {
   Check(equal, AbortReason::kOperandIsNotAGeneratorObject);
 }
 
-void MacroAssembler::AssertUndefinedOrAllocationSite(Register object) {
+void MacroAssembler::AssertUndefinedOrAllocationSite(Register object,
+                                                     Register scratch) {
   if (emit_debug_code()) {
     Label done_checking;
     AssertNotSmi(object);
-    cmp(object, isolate()->factory()->undefined_value());
+    CompareRoot(object, scratch, RootIndex::kUndefinedValue);
     j(equal, &done_checking);
-    cmp(FieldOperand(object, 0),
-        Immediate(isolate()->factory()->allocation_site_map()));
+    LoadRoot(scratch, RootIndex::kAllocationSiteWithWeakNextMap);
+    cmp(FieldOperand(object, 0), scratch);
     Assert(equal, AbortReason::kExpectedUndefinedOrCell);
     bind(&done_checking);
   }
@@ -712,7 +841,8 @@ void MacroAssembler::LeaveBuiltinFrame(Register context, Register target,
   leave();
 }
 
-void MacroAssembler::EnterExitFramePrologue(StackFrame::Type frame_type) {
+void MacroAssembler::EnterExitFramePrologue(StackFrame::Type frame_type,
+                                            Register scratch) {
   DCHECK(frame_type == StackFrame::EXIT ||
          frame_type == StackFrame::BUILTIN_EXIT);
 
@@ -728,7 +858,8 @@ void MacroAssembler::EnterExitFramePrologue(StackFrame::Type frame_type) {
   DCHECK_EQ(-2 * kPointerSize, ExitFrameConstants::kSPOffset);
   push(Immediate(0));  // Saved entry sp, patched before call.
   DCHECK_EQ(-3 * kPointerSize, ExitFrameConstants::kCodeOffset);
-  push(Immediate(CodeObject()));  // Accessed from ExitFrame::code_slot.
+  Move(scratch, CodeObject());
+  push(scratch);  // Accessed from ExitFrame::code_slot.
 
   STATIC_ASSERT(edx == kRuntimeCallFunctionRegister);
   STATIC_ASSERT(esi == kContextRegister);
@@ -740,9 +871,11 @@ void MacroAssembler::EnterExitFramePrologue(StackFrame::Type frame_type) {
       ExternalReference::Create(IsolateAddressId::kContextAddress, isolate());
   ExternalReference c_function_address =
       ExternalReference::Create(IsolateAddressId::kCFunctionAddress, isolate());
-  mov(StaticVariable(c_entry_fp_address), ebp);
-  mov(StaticVariable(context_address), esi);
-  mov(StaticVariable(c_function_address), edx);
+
+  DCHECK(!AreAliased(scratch, ebp, esi, edx));
+  mov(ExternalReferenceAsOperand(c_entry_fp_address, scratch), ebp);
+  mov(ExternalReferenceAsOperand(context_address, scratch), esi);
+  mov(ExternalReferenceAsOperand(c_function_address, scratch), edx);
 }
 
 
@@ -773,7 +906,7 @@ void MacroAssembler::EnterExitFrameEpilogue(int argc, bool save_doubles) {
 
 void MacroAssembler::EnterExitFrame(int argc, bool save_doubles,
                                     StackFrame::Type frame_type) {
-  EnterExitFramePrologue(frame_type);
+  EnterExitFramePrologue(frame_type, edi);
 
   // Set up argc and argv in callee-saved registers.
   int offset = StandardFrameConstants::kCallerSPOffset - kPointerSize;
@@ -784,9 +917,8 @@ void MacroAssembler::EnterExitFrame(int argc, bool save_doubles,
   EnterExitFrameEpilogue(argc, save_doubles);
 }
 
-
-void MacroAssembler::EnterApiExitFrame(int argc) {
-  EnterExitFramePrologue(StackFrame::EXIT);
+void MacroAssembler::EnterApiExitFrame(int argc, Register scratch) {
+  EnterExitFramePrologue(StackFrame::EXIT, scratch);
   EnterExitFrameEpilogue(argc, false);
 }
 
@@ -820,18 +952,21 @@ void MacroAssembler::LeaveExitFrame(bool save_doubles, bool pop_arguments) {
 }
 
 void MacroAssembler::LeaveExitFrameEpilogue() {
-  // Restore current context from top and clear it in debug mode.
-  ExternalReference context_address =
-      ExternalReference::Create(IsolateAddressId::kContextAddress, isolate());
-  mov(esi, StaticVariable(context_address));
-#ifdef DEBUG
-  mov(StaticVariable(context_address), Immediate(Context::kInvalidContext));
-#endif
-
   // Clear the top frame.
   ExternalReference c_entry_fp_address =
       ExternalReference::Create(IsolateAddressId::kCEntryFPAddress, isolate());
-  mov(StaticVariable(c_entry_fp_address), Immediate(0));
+  mov(ExternalReferenceAsOperand(c_entry_fp_address, esi), Immediate(0));
+
+  // Restore current context from top and clear it in debug mode.
+  ExternalReference context_address =
+      ExternalReference::Create(IsolateAddressId::kContextAddress, isolate());
+  mov(esi, ExternalReferenceAsOperand(context_address, esi));
+#ifdef DEBUG
+  push(eax);
+  mov(ExternalReferenceAsOperand(context_address, eax),
+      Immediate(Context::kInvalidContext));
+  pop(eax);
+#endif
 }
 
 void MacroAssembler::LeaveApiExitFrame() {
@@ -841,8 +976,7 @@ void MacroAssembler::LeaveApiExitFrame() {
   LeaveExitFrameEpilogue();
 }
 
-
-void MacroAssembler::PushStackHandler() {
+void MacroAssembler::PushStackHandler(Register scratch) {
   // Adjust this code if not the case.
   STATIC_ASSERT(StackHandlerConstants::kSize == 2 * kPointerSize);
   STATIC_ASSERT(StackHandlerConstants::kNextOffset == 0);
@@ -852,18 +986,17 @@ void MacroAssembler::PushStackHandler() {
   // Link the current handler as the next handler.
   ExternalReference handler_address =
       ExternalReference::Create(IsolateAddressId::kHandlerAddress, isolate());
-  push(StaticVariable(handler_address));
+  push(ExternalReferenceAsOperand(handler_address, scratch));
 
   // Set this new handler as the current one.
-  mov(StaticVariable(handler_address), esp);
+  mov(ExternalReferenceAsOperand(handler_address, scratch), esp);
 }
 
-
-void MacroAssembler::PopStackHandler() {
+void MacroAssembler::PopStackHandler(Register scratch) {
   STATIC_ASSERT(StackHandlerConstants::kNextOffset == 0);
   ExternalReference handler_address =
       ExternalReference::Create(IsolateAddressId::kHandlerAddress, isolate());
-  pop(StaticVariable(handler_address));
+  pop(ExternalReferenceAsOperand(handler_address, scratch));
   add(esp, Immediate(StackHandlerConstants::kSize - kPointerSize));
 }
 
@@ -1102,7 +1235,9 @@ void MacroAssembler::CheckDebugHook(Register fun, Register new_target,
 
   ExternalReference debug_hook_active =
       ExternalReference::debug_hook_on_function_call_address(isolate());
-  cmpb(StaticVariable(debug_hook_active), Immediate(0));
+  push(eax);
+  cmpb(ExternalReferenceAsOperand(debug_hook_active, eax), Immediate(0));
+  pop(eax);
   j(equal, &skip_hook);
 
   {
@@ -1161,7 +1296,7 @@ void MacroAssembler::InvokeFunctionCode(Register function, Register new_target,
 
   // Clear the new.target register if not given.
   if (!new_target.is_valid()) {
-    mov(edx, isolate()->factory()->undefined_value());
+    Move(edx, isolate()->factory()->undefined_value());
   }
 
   Label done;
@@ -1234,6 +1369,21 @@ void TurboAssembler::Ret(int bytes_dropped, Register scratch) {
   }
 }
 
+void TurboAssembler::Push(Immediate value) {
+#ifdef V8_EMBEDDED_BUILTINS
+  if (root_array_available_ && options().isolate_independent_code) {
+    Assembler::AllowExplicitEbxAccessScope read_only_access(this);
+    if (value.is_embedded_object()) {
+      Push(HeapObjectAsOperand(value.embedded_object()));
+      return;
+    } else if (value.is_external_reference()) {
+      Push(ExternalReferenceAddressAsOperand(value.external_reference()));
+      return;
+    }
+  }
+#endif  // V8_EMBEDDED_BUILTINS
+  push(value);
+}
 
 void MacroAssembler::Drop(int stack_elements) {
   if (stack_elements > 0) {
@@ -1257,7 +1407,26 @@ void TurboAssembler::Move(Register dst, const Immediate& src) {
   }
 }
 
-void TurboAssembler::Move(Operand dst, const Immediate& src) { mov(dst, src); }
+void TurboAssembler::Move(Operand dst, const Immediate& src) {
+#ifdef V8_EMBEDDED_BUILTINS
+  // Since there's no scratch register available, take a detour through the
+  // stack.
+  if (root_array_available_ && options().isolate_independent_code) {
+    if (src.is_embedded_object() || src.is_external_reference() ||
+        src.is_heap_object_request()) {
+      Assembler::AllowExplicitEbxAccessScope read_only_access(this);
+      Push(src);
+      pop(dst);
+      return;
+    }
+  }
+#endif  // V8_EMBEDDED_BUILTINS
+  if (src.is_embedded_object()) {
+    mov(dst, src.embedded_object());
+  } else {
+    mov(dst, src);
+  }
+}
 
 void TurboAssembler::Move(Register dst, Handle<HeapObject> src) {
   if (root_array_available_ && options().isolate_independent_code) {
@@ -1585,10 +1754,12 @@ void MacroAssembler::LoadWeakValue(Register in_out, Label* target_if_cleared) {
   and_(in_out, Immediate(~kWeakHeapObjectMask));
 }
 
-void MacroAssembler::IncrementCounter(StatsCounter* counter, int value) {
+void MacroAssembler::IncrementCounter(StatsCounter* counter, int value,
+                                      Register scratch) {
   DCHECK_GT(value, 0);
   if (FLAG_native_code_counters && counter->Enabled()) {
-    Operand operand = StaticVariable(ExternalReference::Create(counter));
+    Operand operand =
+        ExternalReferenceAsOperand(ExternalReference::Create(counter), scratch);
     if (value == 1) {
       inc(operand);
     } else {
@@ -1597,11 +1768,12 @@ void MacroAssembler::IncrementCounter(StatsCounter* counter, int value) {
   }
 }
 
-
-void MacroAssembler::DecrementCounter(StatsCounter* counter, int value) {
+void MacroAssembler::DecrementCounter(StatsCounter* counter, int value,
+                                      Register scratch) {
   DCHECK_GT(value, 0);
   if (FLAG_native_code_counters && counter->Enabled()) {
-    Operand operand = StaticVariable(ExternalReference::Create(counter));
+    Operand operand =
+        ExternalReferenceAsOperand(ExternalReference::Create(counter), scratch);
     if (value == 1) {
       dec(operand);
     } else {
@@ -1696,7 +1868,7 @@ void TurboAssembler::PrepareCallCFunction(int num_arguments, Register scratch) {
 void TurboAssembler::CallCFunction(ExternalReference function,
                                    int num_arguments) {
   // Trashing eax is ok as it will be the return value.
-  mov(eax, Immediate(function));
+  Move(eax, Immediate(function));
   CallCFunction(eax, num_arguments);
 }
 
@@ -1719,15 +1891,20 @@ void TurboAssembler::CallCFunction(Register function, int num_arguments) {
 void TurboAssembler::Call(Handle<Code> code_object, RelocInfo::Mode rmode) {
   if (FLAG_embedded_builtins) {
     // TODO(jgruber): Pc-relative builtin-to-builtin calls.
-    if (root_array_available_ && options().isolate_independent_code) {
-      // TODO(jgruber): There's no scratch register on ia32. Any call that
-      // requires loading a code object from the builtins constant table must:
-      // 1) spill two scratch registers, 2) load the target into scratch1, 3)
-      // store the target into a virtual register on the isolate using scratch2,
-      // 4) restore both scratch registers, and finally 5) call through the
-      // virtual register. All affected call sites should vanish once all
-      // builtins are embedded on ia32.
-      UNREACHABLE();
+    if (root_array_available_ && options().isolate_independent_code &&
+        !Builtins::IsIsolateIndependentBuiltin(*code_object)) {
+      // Since we don't have a scratch register available we call through a
+      // so-called virtual register.
+      // TODO(v8:6666): Remove once pc-relative jumps are supported on ia32.
+      Assembler::AllowExplicitEbxAccessScope read_only_access(this);
+      Operand virtual_call_target_register(
+          kRootRegister,
+          IsolateData::kVirtualCallTargetRegisterOffset - kRootRegisterBias);
+      Move(virtual_call_target_register, Immediate(code_object));
+      add(virtual_call_target_register,
+          Immediate(Code::kHeaderSize - kHeapObjectTag));
+      call(virtual_call_target_register);
+      return;
     } else if (options().inline_offheap_trampolines) {
       int builtin_index = Builtins::kNoBuiltinId;
       if (isolate()->builtins()->IsBuiltinHandle(code_object, &builtin_index) &&
@@ -1749,15 +1926,20 @@ void TurboAssembler::Call(Handle<Code> code_object, RelocInfo::Mode rmode) {
 void TurboAssembler::Jump(Handle<Code> code_object, RelocInfo::Mode rmode) {
   if (FLAG_embedded_builtins) {
     // TODO(jgruber): Pc-relative builtin-to-builtin calls.
-    if (root_array_available_ && options().isolate_independent_code) {
-      // TODO(jgruber): There's no scratch register on ia32. Any call that
-      // requires loading a code object from the builtins constant table must:
-      // 1) spill two scratch registers, 2) load the target into scratch1, 3)
-      // store the target into a virtual register on the isolate using scratch2,
-      // 4) restore both scratch registers, and finally 5) call through the
-      // virtual register. All affected call sites should vanish once all
-      // builtins are embedded on ia32.
-      UNREACHABLE();
+    if (root_array_available_ && options().isolate_independent_code &&
+        !Builtins::IsIsolateIndependentBuiltin(*code_object)) {
+      // Since we don't have a scratch register available we call through a
+      // so-called virtual register.
+      // TODO(v8:6666): Remove once pc-relative jumps are supported on ia32.
+      Assembler::AllowExplicitEbxAccessScope read_only_access(this);
+      Operand virtual_call_target_register(
+          kRootRegister,
+          IsolateData::kVirtualCallTargetRegisterOffset - kRootRegisterBias);
+      Move(virtual_call_target_register, Immediate(code_object));
+      add(virtual_call_target_register,
+          Immediate(Code::kHeaderSize - kHeapObjectTag));
+      jmp(virtual_call_target_register);
+      return;
     } else if (options().inline_offheap_trampolines) {
       int builtin_index = Builtins::kNoBuiltinId;
       if (isolate()->builtins()->IsBuiltinHandle(code_object, &builtin_index) &&
