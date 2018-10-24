@@ -380,6 +380,7 @@
   V(CheckNumber)                        \
   V(CheckInternalizedString)            \
   V(CheckReceiver)                      \
+  V(CheckReceiverOrNullOrUndefined)     \
   V(CheckString)                        \
   V(CheckSymbol)                        \
   V(CheckSmi)                           \

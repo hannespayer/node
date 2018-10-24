@@ -50,20 +50,17 @@ class TurbofanWasmCompilationUnit {
   explicit TurbofanWasmCompilationUnit(wasm::WasmCompilationUnit* wasm_unit);
   ~TurbofanWasmCompilationUnit();
 
-  SourcePositionTable* BuildGraphForWasmFunction(wasm::WasmFeatures* detected,
+  SourcePositionTable* BuildGraphForWasmFunction(wasm::CompilationEnv* env,
+                                                 wasm::WasmFeatures* detected,
                                                  double* decode_ms,
                                                  MachineGraph* mcgraph,
                                                  NodeOriginTable* node_origins);
 
-  void ExecuteCompilation(wasm::WasmFeatures* detected);
-
-  wasm::WasmCode* FinishCompilation(wasm::ErrorThrower*);
+  void ExecuteCompilation(wasm::CompilationEnv* env,
+                          wasm::WasmFeatures* detected);
 
  private:
   wasm::WasmCompilationUnit* const wasm_unit_;
-  bool ok_ = true;
-  wasm::WasmCode* wasm_code_ = nullptr;
-  wasm::Result<wasm::DecodeStruct*> graph_construction_result_;
 
   DISALLOW_COPY_AND_ASSIGN(TurbofanWasmCompilationUnit);
 };
@@ -141,7 +138,7 @@ class WasmGraphBuilder {
     kNoExtraCallableParam = false
   };
 
-  WasmGraphBuilder(wasm::ModuleEnv* env, Zone* zone, MachineGraph* mcgraph,
+  WasmGraphBuilder(wasm::CompilationEnv* env, Zone* zone, MachineGraph* mcgraph,
                    wasm::FunctionSig* sig,
                    compiler::SourcePositionTable* spt = nullptr);
 
@@ -325,7 +322,9 @@ class WasmGraphBuilder {
 
   const wasm::WasmModule* module() { return env_ ? env_->module : nullptr; }
 
-  bool use_trap_handler() const { return env_ && env_->use_trap_handler; }
+  wasm::UseTrapHandler use_trap_handler() const {
+    return env_ ? env_->use_trap_handler : wasm::kNoTrapHandler;
+  }
 
   MachineGraph* mcgraph() { return mcgraph_; }
   Graph* graph();
@@ -340,7 +339,7 @@ class WasmGraphBuilder {
 
   Zone* const zone_;
   MachineGraph* const mcgraph_;
-  wasm::ModuleEnv* const env_;
+  wasm::CompilationEnv* const env_;
 
   Node** control_ = nullptr;
   Node** effect_ = nullptr;
@@ -468,7 +467,7 @@ class WasmGraphBuilder {
   Node* BuildAsmjsStoreMem(MachineType type, Node* index, Node* val);
 
   uint32_t GetExceptionEncodedSize(const wasm::WasmException* exception) const;
-  void BuildEncodeException32BitValue(Node* except_obj, uint32_t* index,
+  void BuildEncodeException32BitValue(Node* values_array, uint32_t* index,
                                       Node* value);
   Node* BuildDecodeException32BitValue(Node* const* values, uint32_t* index);
 

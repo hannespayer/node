@@ -67,28 +67,18 @@ MaybeHandle<JSSegmenter> JSSegmenter::Initialize(
   // 5. Let matcher be ? GetOption(options, "localeMatcher", "string",
   // « "lookup", "best fit" », "best fit").
   // 6. Set opt.[[localeMatcher]] to matcher.
-  const std::vector<const char*> values = {"lookup", "best fit"};
-  std::unique_ptr<char[]> matcher_str = nullptr;
-  Intl::MatcherOption matcher = Intl::MatcherOption::kBestFit;
-  Maybe<bool> found_matcher =
-      Intl::GetStringOption(isolate, options, "localeMatcher", values,
-                            "Intl.Segmenter", &matcher_str);
-  MAYBE_RETURN(found_matcher, MaybeHandle<JSSegmenter>());
-  if (found_matcher.FromJust()) {
-    DCHECK_NOT_NULL(matcher_str.get());
-    if (strcmp(matcher_str.get(), "lookup") == 0) {
-      matcher = Intl::MatcherOption::kLookup;
-    }
-  }
+  Maybe<Intl::MatcherOption> maybe_locale_matcher =
+      Intl::GetLocaleMatcher(isolate, options, "Intl.Segmenter");
+  MAYBE_RETURN(maybe_locale_matcher, MaybeHandle<JSSegmenter>());
+  Intl::MatcherOption matcher = maybe_locale_matcher.FromJust();
 
   // 8. Set opt.[[lb]] to lineBreakStyle.
 
   // 9. Let r be ResolveLocale(%Segmenter%.[[AvailableLocales]],
   // requestedLocales, opt, %Segmenter%.[[RelevantExtensionKeys]]).
-  std::set<std::string> available_locales =
-      Intl::GetAvailableLocales(ICUService::kSegmenter);
-  Intl::ResolvedLocale r = Intl::ResolveLocale(isolate, available_locales,
-                                               requested_locales, matcher, {});
+  Intl::ResolvedLocale r =
+      Intl::ResolveLocale(isolate, JSSegmenter::GetAvailableLocales(),
+                          requested_locales, matcher, {});
 
   // 7. Let lineBreakStyle be ? GetOption(options, "lineBreakStyle", "string", «
   // "strict", "normal", "loose" », "normal").
@@ -243,6 +233,13 @@ Handle<String> JSSegmenter::GranularityAsString() const {
     case Granularity::COUNT:
       UNREACHABLE();
   }
+}
+
+std::set<std::string> JSSegmenter::GetAvailableLocales() {
+  int32_t num_locales = 0;
+  const icu::Locale* icu_available_locales =
+      icu::BreakIterator::getAvailableLocales(num_locales);
+  return Intl::BuildLocaleSet(icu_available_locales, num_locales);
 }
 
 }  // namespace internal

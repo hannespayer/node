@@ -3385,7 +3385,7 @@ void JSObject::PrintInstanceMigration(FILE* file,
   PrintF(file, "\n");
 }
 
-bool JSObject::IsUnmodifiedApiObject(Object** o) {
+bool JSObject::IsUnmodifiedApiObject(ObjectSlot o) {
   Object* object = *o;
   if (object->IsSmi()) return false;
   HeapObject* heap_object = HeapObject::cast(object);
@@ -9254,9 +9254,12 @@ Handle<Map> Map::Normalize(Isolate* isolate, Handle<Map> fast_map,
                   MaybeObject::FromObject(Smi::kZero));
         STATIC_ASSERT(kDescriptorsOffset ==
                       kTransitionsOrPrototypeInfoOffset + kPointerSize);
-        DCHECK_EQ(0, memcmp(HeapObject::RawField(*fresh, kDescriptorsOffset),
-                            HeapObject::RawField(*new_map, kDescriptorsOffset),
-                            kDependentCodeOffset - kDescriptorsOffset));
+        DCHECK_EQ(
+            0,
+            memcmp(
+                HeapObject::RawField(*fresh, kDescriptorsOffset).ToVoidPtr(),
+                HeapObject::RawField(*new_map, kDescriptorsOffset).ToVoidPtr(),
+                kDependentCodeOffset - kDescriptorsOffset));
       } else {
         DCHECK_EQ(0, memcmp(reinterpret_cast<void*>(fresh->address()),
                             reinterpret_cast<void*>(new_map->address()),
@@ -10180,15 +10183,22 @@ Handle<DescriptorArray> DescriptorArray::CopyForFastObjectClone(
     Name* key = src->GetKey(i);
     PropertyDetails details = src->GetDetails(i);
 
-    SLOW_DCHECK(!key->IsPrivateField() && details.IsEnumerable() &&
-                details.kind() == kData);
+    DCHECK(!key->IsPrivateField());
+    DCHECK(details.IsEnumerable());
+    DCHECK_EQ(details.kind(), kData);
 
     // Ensure the ObjectClone property details are NONE, and that all source
     // details did not contain DONT_ENUM.
     PropertyDetails new_details(kData, NONE, details.location(),
                                 details.constness(), details.representation(),
                                 details.field_index());
-    descriptors->Set(i, key, src->GetValue(i), new_details);
+    // Do not propagate the field type of normal object fields from the
+    // original descriptors since FieldType changes don't create new maps.
+    MaybeObject* type = src->GetValue(i);
+    if (details.location() == PropertyLocation::kField) {
+      type = MaybeObject::FromObject(FieldType::Any());
+    }
+    descriptors->Set(i, key, type, new_details);
   }
 
   descriptors->Sort();
@@ -14341,7 +14351,7 @@ void ObjectVisitor::VisitCodeTarget(Code* host, RelocInfo* rinfo) {
   DCHECK(RelocInfo::IsCodeTargetMode(rinfo->rmode()));
   Object* old_pointer = Code::GetCodeFromTargetAddress(rinfo->target_address());
   Object* new_pointer = old_pointer;
-  VisitPointer(host, &new_pointer);
+  VisitPointer(host, ObjectSlot(&new_pointer));
   DCHECK_EQ(old_pointer, new_pointer);
 }
 
@@ -14349,7 +14359,7 @@ void ObjectVisitor::VisitEmbeddedPointer(Code* host, RelocInfo* rinfo) {
   DCHECK(rinfo->rmode() == RelocInfo::EMBEDDED_OBJECT);
   Object* old_pointer = rinfo->target_object();
   Object* new_pointer = old_pointer;
-  VisitPointer(host, &new_pointer);
+  VisitPointer(host, ObjectSlot(&new_pointer));
   DCHECK_EQ(old_pointer, new_pointer);
 }
 
@@ -14397,9 +14407,7 @@ void Code::CopyFromNoFlush(Heap* heap, const CodeDesc& desc) {
   }
 
   // Copy reloc info.
-  CopyBytes(relocation_start(),
-            desc.buffer + desc.buffer_size - desc.reloc_size,
-            static_cast<size_t>(desc.reloc_size));
+  CopyRelocInfoToByteArray(unchecked_relocation_info(), desc);
 
   // Unbox handles and relocate.
   Assembler* origin = desc.origin;
@@ -15619,7 +15627,8 @@ void JSObject::EnsureCanContainElements(Handle<JSObject> object,
   // stack), but the method that's called here iterates over them in forward
   // direction.
   return EnsureCanContainElements(
-      object, args->arguments() - first_arg - (arg_count - 1), arg_count, mode);
+      object, ObjectSlot(args->arguments() - first_arg - (arg_count - 1)),
+      arg_count, mode);
 }
 
 
@@ -17972,7 +17981,7 @@ void BaseNameDictionary<Derived, Shape>::CopyEnumKeysTo(
   // store operations that are safe for concurrent marking.
   base::AtomicElement<Smi*>* start =
       reinterpret_cast<base::AtomicElement<Smi*>*>(
-          storage->GetFirstElementAddress());
+          storage->GetFirstElementAddress().address());
   std::sort(start, start + length, cmp);
   for (int i = 0; i < length; i++) {
     int index = Smi::ToInt(raw_storage->get(i));
@@ -18004,7 +18013,7 @@ Handle<FixedArray> BaseNameDictionary<Derived, Shape>::IterationIndices(
     // store operations that are safe for concurrent marking.
     base::AtomicElement<Smi*>* start =
         reinterpret_cast<base::AtomicElement<Smi*>*>(
-            array->GetFirstElementAddress());
+            array->GetFirstElementAddress().address());
     std::sort(start, start + array_size, cmp);
   }
   return FixedArray::ShrinkOrEmpty(isolate, array, array_size);
@@ -18046,7 +18055,7 @@ void BaseNameDictionary<Derived, Shape>::CollectKeysTo(
     // store operations that are safe for concurrent marking.
     base::AtomicElement<Smi*>* start =
         reinterpret_cast<base::AtomicElement<Smi*>*>(
-            array->GetFirstElementAddress());
+            array->GetFirstElementAddress().address());
     std::sort(start, start + array_size, cmp);
   }
 
@@ -18951,48 +18960,49 @@ template void
 BaseNameDictionary<NameDictionary, NameDictionaryShape>::CollectKeysTo(
     Handle<NameDictionary> dictionary, KeyAccumulator* keys);
 
-void JSWeakFactoryCleanupTask::Run() {
+void JSWeakFactory::CleanupJSWeakFactoriesCallback(void* data) {
   DCHECK(FLAG_harmony_weak_refs);
-  HandleScope handle_scope(isolate_);
-  Handle<Context> native_context =
-      Handle<Context>::cast(Utils::OpenPersistent(native_context_));
-  v8::Local<v8::Context> context_local = Utils::ToLocal(native_context);
-  v8::Context::Scope context_scope(context_local);
+  Isolate* isolate = reinterpret_cast<Isolate*>(data);
+  HandleScope handle_scope(isolate);
+  Handle<Context> native_context = isolate->native_context();
 
   while (native_context->dirty_js_weak_factories()->IsJSWeakFactory()) {
     Handle<JSWeakFactory> weak_factory =
         handle(JSWeakFactory::cast(native_context->dirty_js_weak_factories()),
-               isolate_);
+               isolate);
     native_context->set_dirty_js_weak_factories(weak_factory->next());
-    weak_factory->set_next(ReadOnlyRoots(isolate_).undefined_value());
+    weak_factory->set_next(ReadOnlyRoots(isolate).undefined_value());
     weak_factory->set_scheduled_for_cleanup(false);
 
-    // TODO(marja): After WeakCell.cleanup() is added, it's possible that it's
-    // called for something already in cleared_cells list. In that case, we
-    // shouldn't call the user's cleanup function.
+    // It's possible that the cleared_cells list is empty, since
+    // WeakCell.clear() was called on all its elements before this task ran. In
+    // that case, don't call the cleanup function.
+    if (weak_factory->cleared_cells()->IsUndefined(isolate)) {
+      continue;
+    }
 
     // Construct the iterator.
     Handle<JSWeakFactoryCleanupIterator> iterator;
     {
       Handle<Map> cleanup_iterator_map(
-          native_context->js_weak_factory_cleanup_iterator_map(), isolate_);
+          native_context->js_weak_factory_cleanup_iterator_map(), isolate);
       iterator = Handle<JSWeakFactoryCleanupIterator>::cast(
-          isolate_->factory()->NewJSObjectFromMap(
+          isolate->factory()->NewJSObjectFromMap(
               cleanup_iterator_map, NOT_TENURED,
               Handle<AllocationSite>::null()));
       iterator->set_factory(*weak_factory);
     }
-    Handle<Object> cleanup(weak_factory->cleanup(), isolate_);
+    Handle<Object> cleanup(weak_factory->cleanup(), isolate);
 
-    v8::TryCatch try_catch(reinterpret_cast<v8::Isolate*>(isolate_));
+    v8::TryCatch try_catch(reinterpret_cast<v8::Isolate*>(isolate));
     v8::Local<v8::Value> result;
     MaybeHandle<Object> exception;
     Handle<Object> args[] = {iterator};
     bool has_pending_exception = !ToLocal<Value>(
         Execution::TryCall(
-            isolate_, cleanup,
-            handle(ReadOnlyRoots(isolate_).undefined_value(), isolate_), 1,
-            args, Execution::MessageHandling::kReport, &exception,
+            isolate, cleanup,
+            handle(ReadOnlyRoots(isolate).undefined_value(), isolate), 1, args,
+            Execution::MessageHandling::kReport, &exception,
             Execution::Target::kCallable),
         &result);
     // TODO(marja): (spec): What if there's an exception?

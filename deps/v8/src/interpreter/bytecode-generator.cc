@@ -1327,7 +1327,8 @@ void BytecodeGenerator::VisitDeclarations(Declaration::List* declarations) {
   globals_builder_ = new (zone()) GlobalDeclarationsBuilder(zone());
 }
 
-void BytecodeGenerator::VisitStatements(ZonePtrList<Statement>* statements) {
+void BytecodeGenerator::VisitStatements(
+    const ZonePtrList<Statement>* statements) {
   for (int i = 0; i < statements->length(); i++) {
     // Allocate an outer register allocations scope for the statement.
     RegisterAllocationScope allocation_scope(this);
@@ -1860,7 +1861,8 @@ void BytecodeGenerator::BuildClassLiteral(ClassLiteral* expr, Register name) {
     for (int i = 0; i < expr->properties()->length(); i++) {
       ClassLiteral::Property* property = expr->properties()->at(i);
       if (property->is_computed_name()) {
-        DCHECK_NE(property->kind(), ClassLiteral::Property::PRIVATE_FIELD);
+        DCHECK_IMPLIES(property->kind() == ClassLiteral::Property::FIELD,
+                       !property->is_private());
         Register key = register_allocator()->GrowRegisterList(&args);
 
         builder()->SetExpressionAsStatementPosition(property->key());
@@ -1882,7 +1884,8 @@ void BytecodeGenerator::BuildClassLiteral(ClassLiteral* expr, Register name) {
               .Bind(&done);
         }
 
-        if (property->kind() == ClassLiteral::Property::PUBLIC_FIELD) {
+        if (property->kind() == ClassLiteral::Property::FIELD &&
+            !property->is_private()) {
           // Initialize field's name variable with the computed name.
           DCHECK_NOT_NULL(property->computed_name_var());
           builder()->LoadAccumulatorWithRegister(key);
@@ -1891,15 +1894,15 @@ void BytecodeGenerator::BuildClassLiteral(ClassLiteral* expr, Register name) {
         }
       }
 
-      if (property->kind() == ClassLiteral::Property::PUBLIC_FIELD) {
+      if (property->kind() == ClassLiteral::Property::FIELD) {
+        if (property->is_private()) {
+          builder()->CallRuntime(Runtime::kCreatePrivateFieldSymbol);
+          DCHECK_NOT_NULL(property->private_field_name_var());
+          BuildVariableAssignment(property->private_field_name_var(),
+                                  Token::INIT, HoleCheckMode::kElided);
+        }
         // We don't compute field's value here, but instead do it in the
         // initializer function.
-        continue;
-      } else if (property->kind() == ClassLiteral::Property::PRIVATE_FIELD) {
-        builder()->CallRuntime(Runtime::kCreatePrivateFieldSymbol);
-        DCHECK_NOT_NULL(property->private_field_name_var());
-        BuildVariableAssignment(property->private_field_name_var(), Token::INIT,
-                                HoleCheckMode::kElided);
         continue;
       }
 
@@ -2004,14 +2007,16 @@ void BytecodeGenerator::VisitInitializeClassFieldsStatement(
     ClassLiteral::Property* property = stmt->fields()->at(i);
 
     if (property->is_computed_name()) {
-      DCHECK_EQ(property->kind(), ClassLiteral::Property::PUBLIC_FIELD);
+      DCHECK_EQ(property->kind(), ClassLiteral::Property::FIELD);
+      DCHECK(!property->is_private());
       Variable* var = property->computed_name_var();
       DCHECK_NOT_NULL(var);
       // The computed name is already evaluated and stored in a
       // variable at class definition time.
       BuildVariableLoad(var, HoleCheckMode::kElided);
       builder()->StoreAccumulatorInRegister(key);
-    } else if (property->kind() == ClassLiteral::Property::PRIVATE_FIELD) {
+    } else if (property->kind() == ClassLiteral::Property::FIELD &&
+               property->is_private()) {
       Variable* private_field_name_var = property->private_field_name_var();
       DCHECK_NOT_NULL(private_field_name_var);
       BuildVariableLoad(private_field_name_var, HoleCheckMode::kElided);
@@ -2025,7 +2030,8 @@ void BytecodeGenerator::VisitInitializeClassFieldsStatement(
     VisitSetHomeObject(value, constructor, property);
 
     Runtime::FunctionId function_id =
-        property->kind() == ClassLiteral::Property::PUBLIC_FIELD
+        property->kind() == ClassLiteral::Property::FIELD &&
+                !property->is_private()
             ? Runtime::kCreateDataProperty
             : Runtime::kAddPrivateField;
     builder()->CallRuntime(function_id, args);
@@ -2445,7 +2451,7 @@ void BytecodeGenerator::BuildArrayLiteralSpread(Spread* spread, Register array,
 }
 
 void BytecodeGenerator::BuildCreateArrayLiteral(
-    ZonePtrList<Expression>* elements, ArrayLiteral* expr) {
+    const ZonePtrList<Expression>* elements, ArrayLiteral* expr) {
   RegisterAllocationScope register_scope(this);
   Register index = register_allocator()->NewRegister();
   Register array = register_allocator()->NewRegister();
@@ -3573,7 +3579,7 @@ void BytecodeGenerator::VisitResolvedProperty(ResolvedProperty* expr) {
   UNREACHABLE();
 }
 
-void BytecodeGenerator::VisitArguments(ZonePtrList<Expression>* args,
+void BytecodeGenerator::VisitArguments(const ZonePtrList<Expression>* args,
                                        RegisterList* arg_regs) {
   // Visit arguments.
   for (int i = 0; i < static_cast<int>(args->length()); i++) {
@@ -3750,7 +3756,7 @@ void BytecodeGenerator::VisitCall(Call* expr) {
 void BytecodeGenerator::VisitCallSuper(Call* expr) {
   RegisterAllocationScope register_scope(this);
   SuperCallReference* super = expr->expression()->AsSuperCallReference();
-  ZonePtrList<Expression>* args = expr->arguments();
+  const ZonePtrList<Expression>* args = expr->arguments();
 
   int first_spread_index = 0;
   for (; first_spread_index < args->length(); first_spread_index++) {

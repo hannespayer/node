@@ -216,30 +216,19 @@ MaybeHandle<JSNumberFormat> JSNumberFormat::Initialize(
   // 5. Let matcher be ? GetOption(options, "localeMatcher", "string", «
   // "lookup", "best fit" », "best fit").
   // 6. Set opt.[[localeMatcher]] to matcher.
-  const std::vector<const char*> values = {"lookup", "best fit"};
-  std::unique_ptr<char[]> matcher_str = nullptr;
-  Intl::MatcherOption matcher = Intl::MatcherOption::kBestFit;
-  Maybe<bool> found_matcher =
-      Intl::GetStringOption(isolate, options, "localeMatcher", values,
-                            "Intl.NumberFormat", &matcher_str);
-  MAYBE_RETURN(found_matcher, MaybeHandle<JSNumberFormat>());
-  if (found_matcher.FromJust()) {
-    DCHECK_NOT_NULL(matcher_str.get());
-    if (strcmp(matcher_str.get(), "lookup") == 0) {
-      matcher = Intl::MatcherOption::kLookup;
-    }
-  }
+  Maybe<Intl::MatcherOption> maybe_locale_matcher =
+      Intl::GetLocaleMatcher(isolate, options, "Intl.NumberFormat");
+  MAYBE_RETURN(maybe_locale_matcher, MaybeHandle<JSNumberFormat>());
+  Intl::MatcherOption matcher = maybe_locale_matcher.FromJust();
 
   // 7. Let localeData be %NumberFormat%.[[LocaleData]].
   // 8. Let r be ResolveLocale(%NumberFormat%.[[AvailableLocales]],
   // requestedLocales, opt,  %NumberFormat%.[[RelevantExtensionKeys]],
   // localeData).
-  std::set<std::string> available_locales =
-      Intl::GetAvailableLocales(ICUService::kNumberFormat);
   std::set<std::string> relevant_extension_keys{"nu"};
   Intl::ResolvedLocale r =
-      Intl::ResolveLocale(isolate, available_locales, requested_locales,
-                          matcher, relevant_extension_keys);
+      Intl::ResolveLocale(isolate, JSNumberFormat::GetAvailableLocales(),
+                          requested_locales, matcher, relevant_extension_keys);
 
   // 9. Set numberFormat.[[Locale]] to r.[[locale]].
   Handle<String> locale_str =
@@ -703,6 +692,13 @@ MaybeHandle<JSArray> JSNumberFormat::FormatToParts(
   JSObject::ValidateElements(*result);
 
   return result;
+}
+
+std::set<std::string> JSNumberFormat::GetAvailableLocales() {
+  int32_t num_locales = 0;
+  const icu::Locale* icu_available_locales =
+      icu::NumberFormat::getAvailableLocales(num_locales);
+  return Intl::BuildLocaleSet(icu_available_locales, num_locales);
 }
 
 }  // namespace internal

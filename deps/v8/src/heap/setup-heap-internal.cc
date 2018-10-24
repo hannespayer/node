@@ -623,7 +623,7 @@ void Heap::CreateInitialObjects() {
   set_minus_infinity_value(
       *factory->NewHeapNumber(-V8_INFINITY, TENURED_READ_ONLY));
 
-  set_hash_seed(*factory->NewByteArray(kInt64Size, TENURED));
+  set_hash_seed(*factory->NewByteArray(kInt64Size, TENURED_READ_ONLY));
   InitializeHashSeed();
 
   // There's no "current microtask" in the beginning.
@@ -895,6 +895,9 @@ void Heap::CreateInitialObjects() {
   set_serialized_global_proxy_sizes(roots.empty_fixed_array());
 
   set_noscript_shared_function_infos(roots.empty_weak_array_list());
+
+  set_off_heap_trampoline_relocation_info(
+      *Builtins::GenerateOffHeapTrampolineRelocInfo(isolate_));
 
   // Evaluate the hash values which will then be cached in the strings.
   isolate()->factory()->zero_string()->Hash();

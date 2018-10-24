@@ -17,6 +17,7 @@
 #include "src/objects-inl.h"
 #include "src/objects/intl-objects.h"
 #include "src/objects/js-relative-time-format-inl.h"
+#include "unicode/datefmt.h"
 #include "unicode/numfmt.h"
 #include "unicode/reldatefmt.h"
 #include "unicode/uvernum.h"  // for U_ICU_VERSION_MAJOR_NUM
@@ -83,29 +84,19 @@ MaybeHandle<JSRelativeTimeFormat> JSRelativeTimeFormat::Initialize(
   // 5. Let matcher be ? GetOption(options, "localeMatcher", "string", «
   // "lookup", "best fit" », "best fit").
   // 6. Set opt.[[localeMatcher]] to matcher.
-  const std::vector<const char*> values = {"lookup", "best fit"};
-  std::unique_ptr<char[]> matcher_str = nullptr;
-  Intl::MatcherOption matcher = Intl::MatcherOption::kBestFit;
-  Maybe<bool> found_matcher =
-      Intl::GetStringOption(isolate, options, "localeMatcher", values,
-                            "Intl.RelativeTimeFormat", &matcher_str);
-  MAYBE_RETURN(found_matcher, MaybeHandle<JSRelativeTimeFormat>());
-  if (found_matcher.FromJust()) {
-    DCHECK_NOT_NULL(matcher_str.get());
-    if (strcmp(matcher_str.get(), "lookup") == 0) {
-      matcher = Intl::MatcherOption::kLookup;
-    }
-  }
+  Maybe<Intl::MatcherOption> maybe_locale_matcher =
+      Intl::GetLocaleMatcher(isolate, options, "Intl.RelativeTimeFormat");
+  MAYBE_RETURN(maybe_locale_matcher, MaybeHandle<JSRelativeTimeFormat>());
+  Intl::MatcherOption matcher = maybe_locale_matcher.FromJust();
 
   // 7. Let localeData be %RelativeTimeFormat%.[[LocaleData]].
   // 8. Let r be
   // ResolveLocale(%RelativeTimeFormat%.[[AvailableLocales]],
   //               requestedLocales, opt,
   //               %RelativeTimeFormat%.[[RelevantExtensionKeys]], localeData).
-  std::set<std::string> available_locales =
-      Intl::GetAvailableLocales(ICUService::kRelativeDateTimeFormatter);
-  Intl::ResolvedLocale r = Intl::ResolveLocale(isolate, available_locales,
-                                               requested_locales, matcher, {});
+  Intl::ResolvedLocale r =
+      Intl::ResolveLocale(isolate, JSRelativeTimeFormat::GetAvailableLocales(),
+                          requested_locales, matcher, {});
 
   // 9. Let locale be r.[[Locale]].
   // 10. Set relativeTimeFormat.[[Locale]] to locale.
@@ -430,6 +421,13 @@ MaybeHandle<Object> JSRelativeTimeFormat::Format(
   return factory->NewStringFromTwoByte(Vector<const uint16_t>(
       reinterpret_cast<const uint16_t*>(formatted.getBuffer()),
       formatted.length()));
+}
+
+std::set<std::string> JSRelativeTimeFormat::GetAvailableLocales() {
+  int32_t num_locales = 0;
+  const icu::Locale* icu_available_locales =
+      icu::DateFormat::getAvailableLocales(num_locales);
+  return Intl::BuildLocaleSet(icu_available_locales, num_locales);
 }
 
 }  // namespace internal

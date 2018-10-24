@@ -13,8 +13,8 @@
 #include <set>
 #include <string>
 
+#include "src/base/timezone-cache.h"
 #include "src/contexts.h"
-#include "src/intl.h"
 #include "src/objects.h"
 #include "src/objects/managed.h"
 #include "unicode/locid.h"
@@ -36,38 +36,17 @@ class JSCollator;
 
 class Intl {
  public:
-  enum Type {
-    kNumberFormat = 0,
-    kCollator,
-    kDateTimeFormat,
-    kPluralRules,
-    kBreakIterator,
-    kLocale,
-
-    kTypeCount
-  };
-
   enum class BoundFunctionContextSlot {
     kBoundFunction = Context::MIN_CONTEXT_SLOTS,
     kLength
   };
 
-  inline static Intl::Type TypeFromInt(int type);
-  inline static Intl::Type TypeFromSmi(Smi* type);
-
-  // Checks if the given object has the expected_type based by looking
-  // up a private symbol on the object.
-  //
-  // TODO(gsathya): This should just be an instance type check once we
-  // move all the Intl objects to C++.
-  static bool IsObjectOfType(Isolate* isolate, Handle<Object> object,
-                             Intl::Type expected_type);
-
-  // Gets the ICU locales for a given service. If there is a locale with a
-  // script tag then the locales also include a locale without the script; eg,
-  // pa_Guru_IN (language=Panjabi, script=Gurmukhi, country-India) would include
-  // pa_IN.
-  static std::set<std::string> GetAvailableLocales(ICUService service);
+  // Build a set of ICU locales from a list of Locales. If there is a locale
+  // with a script tag then the locales also include a locale without the
+  // script; eg, pa_Guru_IN (language=Panjabi, script=Gurmukhi, country-India)
+  // would include pa_IN.
+  static std::set<std::string> BuildLocaleSet(
+      const icu::Locale* icu_available_locales, int32_t count);
 
   // Get the name of the numbering system from locale.
   // ICU doesn't expose numbering system in any way, so we have to assume that
@@ -75,11 +54,9 @@ class Intl {
   // NumberFormat/Calendar would.
   static std::string GetNumberingSystem(const icu::Locale& icu_locale);
 
-  static V8_WARN_UNUSED_RESULT MaybeHandle<JSObject> AvailableLocalesOf(
-      Isolate* isolate, Handle<String> service);
-
   static V8_WARN_UNUSED_RESULT MaybeHandle<JSObject> SupportedLocalesOf(
-      Isolate* isolate, ICUService service, Handle<Object> locales_in,
+      Isolate* isolate, const char* method,
+      const std::set<std::string>& available_locales, Handle<Object> locales_in,
       Handle<Object> options_in);
 
   static std::string DefaultLocale(Isolate* isolate);
@@ -133,14 +110,20 @@ class Intl {
       Isolate* isolate, Handle<Object> locales,
       bool only_return_one_result = false);
 
-  V8_WARN_UNUSED_RESULT static MaybeHandle<JSObject> CreateNumberFormat(
-      Isolate* isolate, Handle<String> locale, Handle<JSObject> options,
-      Handle<JSObject> resolved);
+  // ecma-402 #sec-intl.getcanonicallocales
+  V8_WARN_UNUSED_RESULT static MaybeHandle<JSArray> GetCanonicalLocales(
+      Isolate* isolate, Handle<Object> locales);
 
   // For locale sensitive functions
   V8_WARN_UNUSED_RESULT static MaybeHandle<String> StringLocaleConvertCase(
       Isolate* isolate, Handle<String> s, bool is_upper,
       Handle<Object> locales);
+
+  V8_WARN_UNUSED_RESULT static MaybeHandle<String> ConvertToUpper(
+      Isolate* isolate, Handle<String> s);
+
+  V8_WARN_UNUSED_RESULT static MaybeHandle<String> ConvertToLower(
+      Isolate* isolate, Handle<String> s);
 
   V8_WARN_UNUSED_RESULT static MaybeHandle<Object> StringLocaleCompare(
       Isolate* isolate, Handle<String> s1, Handle<String> s2,
@@ -160,8 +143,6 @@ class Intl {
       Isolate* isolate, icu::DecimalFormat* number_format,
       Handle<JSReceiver> options, int mnfd_default, int mxfd_default);
 
-  static icu::Locale CreateICULocale(Isolate* isolate,
-                                     Handle<String> bcp47_locale_str);
   static icu::Locale CreateICULocale(const std::string& bcp47_locale);
 
   // Helper funciton to convert a UnicodeString to a Handle<String>
@@ -221,10 +202,27 @@ class Intl {
       const std::vector<std::string>& requested_locales, MatcherOption options,
       const std::set<std::string>& relevant_extension_keys);
 
+  // Shared function to read the "localeMatcher" option.
+  V8_WARN_UNUSED_RESULT static Maybe<MatcherOption> GetLocaleMatcher(
+      Isolate* isolate, Handle<JSReceiver> options, const char* method);
+
   // Utility function to set text to BreakIterator.
   static Managed<icu::UnicodeString>* SetTextToBreakIterator(
       Isolate* isolate, Handle<String> text,
       icu::BreakIterator* break_iterator);
+
+  // ecma262 #sec-string.prototype.normalize
+  V8_WARN_UNUSED_RESULT static MaybeHandle<String> Normalize(
+      Isolate* isolate, Handle<String> string, Handle<Object> form_input);
+  static base::TimezoneCache* CreateTimeZoneCache();
+
+  // Convert a Handle<String> to icu::UnicodeString
+  static icu::UnicodeString ToICUUnicodeString(Isolate* isolate,
+                                               Handle<String> string);
+
+  static const uint8_t* ToLatin1LowerTable();
+
+  static String* ConvertOneByteToLower(String* src, String* dst);
 };
 
 }  // namespace internal

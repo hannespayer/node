@@ -47,6 +47,7 @@
 #include "src/objects/js-generator-inl.h"
 #include "src/objects/module-inl.h"
 #include "src/objects/promise-inl.h"
+#include "src/objects/slots.h"
 #include "src/objects/stack-frame-info-inl.h"
 #include "src/profiler/tracing-cpu-profiler.h"
 #include "src/prototype.h"
@@ -254,18 +255,25 @@ void Isolate::IterateThread(ThreadVisitor* v, char* t) {
 
 void Isolate::Iterate(RootVisitor* v, ThreadLocalTop* thread) {
   // Visit the roots from the top for a given thread.
-  v->VisitRootPointer(Root::kTop, nullptr, &thread->pending_exception_);
-  v->VisitRootPointer(Root::kTop, nullptr, &thread->pending_message_obj_);
   v->VisitRootPointer(Root::kTop, nullptr,
-                      bit_cast<Object**>(&(thread->context_)));
-  v->VisitRootPointer(Root::kTop, nullptr, &thread->scheduled_exception_);
+                      ObjectSlot(&thread->pending_exception_));
+  v->VisitRootPointer(Root::kTop, nullptr,
+                      ObjectSlot(&thread->pending_message_obj_));
+  v->VisitRootPointer(
+      Root::kTop, nullptr,
+      ObjectSlot(reinterpret_cast<Address>(&(thread->context_))));
+  v->VisitRootPointer(Root::kTop, nullptr,
+                      ObjectSlot(&thread->scheduled_exception_));
 
   for (v8::TryCatch* block = thread->try_catch_handler(); block != nullptr;
        block = block->next_) {
-    v->VisitRootPointer(Root::kTop, nullptr,
-                        bit_cast<Object**>(&(block->exception_)));
-    v->VisitRootPointer(Root::kTop, nullptr,
-                        bit_cast<Object**>(&(block->message_obj_)));
+    // TODO(3770): Make TryCatch::exception_ an Address (and message_obj_ too).
+    v->VisitRootPointer(
+        Root::kTop, nullptr,
+        ObjectSlot(reinterpret_cast<Address>(&(block->exception_))));
+    v->VisitRootPointer(
+        Root::kTop, nullptr,
+        ObjectSlot(reinterpret_cast<Address>(&(block->message_obj_))));
   }
 
   // Iterate over pointers on native execution stack.
@@ -614,9 +622,10 @@ bool IsBuiltinFunction(Isolate* isolate, HeapObject* object,
 
 void CaptureAsyncStackTrace(Isolate* isolate, Handle<JSPromise> promise,
                             FrameArrayBuilder* builder) {
-  CHECK_EQ(Promise::kPending, promise->status());
-
   while (!builder->full()) {
+    // Check that the {promise} is not settled.
+    if (promise->status() != Promise::kPending) return;
+
     // Check that we have exactly one PromiseReaction on the {promise}.
     if (!promise->reactions()->IsPromiseReaction()) return;
     Handle<PromiseReaction> reaction(
@@ -767,22 +776,22 @@ Handle<Object> Isolate::CaptureSimpleStackTrace(Handle<JSReceiver> error_object,
             this);
         Handle<JSGeneratorObject> generator_object(
             JSGeneratorObject::cast(context->extension()), this);
-        CHECK(generator_object->is_executing());
-
-        if (generator_object->IsJSAsyncFunctionObject()) {
-          Handle<JSAsyncFunctionObject> async_function_object =
-              Handle<JSAsyncFunctionObject>::cast(generator_object);
-          Handle<JSPromise> promise(async_function_object->promise(), this);
-          CaptureAsyncStackTrace(this, promise, &builder);
-        } else {
-          Handle<JSAsyncGeneratorObject> async_generator_object =
-              Handle<JSAsyncGeneratorObject>::cast(generator_object);
-          Handle<AsyncGeneratorRequest> async_generator_request(
-              AsyncGeneratorRequest::cast(async_generator_object->queue()),
-              this);
-          Handle<JSPromise> promise(
-              JSPromise::cast(async_generator_request->promise()), this);
-          CaptureAsyncStackTrace(this, promise, &builder);
+        if (generator_object->is_executing()) {
+          if (generator_object->IsJSAsyncFunctionObject()) {
+            Handle<JSAsyncFunctionObject> async_function_object =
+                Handle<JSAsyncFunctionObject>::cast(generator_object);
+            Handle<JSPromise> promise(async_function_object->promise(), this);
+            CaptureAsyncStackTrace(this, promise, &builder);
+          } else {
+            Handle<JSAsyncGeneratorObject> async_generator_object =
+                Handle<JSAsyncGeneratorObject>::cast(generator_object);
+            Handle<AsyncGeneratorRequest> async_generator_request(
+                AsyncGeneratorRequest::cast(async_generator_object->queue()),
+                this);
+            Handle<JSPromise> promise(
+                JSPromise::cast(async_generator_request->promise()), this);
+            CaptureAsyncStackTrace(this, promise, &builder);
+          }
         }
       } else {
         // The {promise_reaction_job_task} doesn't belong to an await (or
@@ -3053,19 +3062,6 @@ void CreateOffHeapTrampolines(Isolate* isolate) {
     }
   }
 }
-
-void PrintEmbeddedBuiltinCandidates(Isolate* isolate) {
-  CHECK(FLAG_print_embedded_builtin_candidates);
-  bool found_a_candidate = false;
-  for (int i = 0; i < Builtins::builtin_count; i++) {
-    if (Builtins::IsIsolateIndependent(i)) continue;
-    Code* builtin = isolate->heap()->builtin(i);
-    if (!builtin->IsIsolateIndependent(isolate)) continue;
-    if (!found_a_candidate) PrintF("Found embedded builtin candidates:\n");
-    found_a_candidate = true;
-    PrintF("  %s\n", Builtins::name(i));
-  }
-}
 }  // namespace
 
 void Isolate::PrepareEmbeddedBlobForSerialization() {
@@ -3231,9 +3227,6 @@ bool Isolate::Init(StartupDeserializer* des) {
   setup_delegate_ = nullptr;
 
   if (FLAG_print_builtin_size) PrintBuiltinSizes(this);
-  if (FLAG_print_embedded_builtin_candidates) {
-    PrintEmbeddedBuiltinCandidates(this);
-  }
 
   // Finish initialization of ThreadLocal after deserialization is done.
   clear_pending_exception();
@@ -3637,6 +3630,8 @@ bool Isolate::IsPromiseHookProtectorIntact() {
       Smi::ToInt(promise_hook_cell->value()) == kProtectorValid;
   DCHECK_IMPLIES(is_promise_hook_protector_intact,
                  !promise_hook_or_async_event_delegate_);
+  DCHECK_IMPLIES(is_promise_hook_protector_intact,
+                 !promise_hook_or_debug_is_active_or_async_event_delegate_);
   return is_promise_hook_protector_intact;
 }
 
@@ -3952,12 +3947,18 @@ void Isolate::FireCallCompletedCallback() {
 }
 
 void Isolate::PromiseHookStateUpdated() {
-  bool is_active = promise_hook_ || async_event_delegate_;
-  if (is_active && IsPromiseHookProtectorIntact()) {
+  bool promise_hook_or_async_event_delegate =
+      promise_hook_ || async_event_delegate_;
+  bool promise_hook_or_debug_is_active_or_async_event_delegate =
+      promise_hook_or_async_event_delegate || debug()->is_active();
+  if (promise_hook_or_debug_is_active_or_async_event_delegate &&
+      IsPromiseHookProtectorIntact()) {
     HandleScope scope(this);
     InvalidatePromiseHookProtector();
   }
-  promise_hook_or_async_event_delegate_ = is_active;
+  promise_hook_or_async_event_delegate_ = promise_hook_or_async_event_delegate;
+  promise_hook_or_debug_is_active_or_async_event_delegate_ =
+      promise_hook_or_debug_is_active_or_async_event_delegate;
 }
 
 namespace {
@@ -4039,16 +4040,14 @@ void Isolate::SetHostInitializeImportMetaObjectCallback(
 }
 
 MaybeHandle<Object> Isolate::RunPrepareStackTraceCallback(
-    Handle<Context> context, Handle<JSObject> error) {
+    Handle<Context> context, Handle<JSObject> error, Handle<JSArray> sites) {
   v8::Local<v8::Context> api_context = Utils::ToLocal(context);
-
-  v8::Local<StackTrace> trace =
-      Utils::StackTraceToLocal(GetDetailedStackTrace(error));
 
   v8::Local<v8::Value> stack;
   ASSIGN_RETURN_ON_SCHEDULED_EXCEPTION_VALUE(
       this, stack,
-      prepare_stack_trace_callback_(api_context, Utils::ToLocal(error), trace),
+      prepare_stack_trace_callback_(api_context, Utils::ToLocal(error),
+                                    Utils::ToLocal(sites)),
       MaybeHandle<Object>());
   return Utils::OpenHandle(*stack);
 }

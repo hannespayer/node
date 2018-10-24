@@ -739,19 +739,10 @@ MaybeHandle<JSDateTimeFormat> JSDateTimeFormat::Initialize(
   // 4. Let matcher be ? GetOption(options, "localeMatcher", "string",
   // « "lookup", "best fit" », "best fit").
   // 5. Set opt.[[localeMatcher]] to matcher.
-  std::vector<const char*> values = {"lookup", "best fit"};
-  std::unique_ptr<char[]> locale_matcher_str = nullptr;
-  Intl::MatcherOption locale_matcher = Intl::MatcherOption::kBestFit;
-  Maybe<bool> found_locale_matcher =
-      Intl::GetStringOption(isolate, options, "localeMatcher", values,
-                            "Intl.DateTimeFormat", &locale_matcher_str);
-  MAYBE_RETURN(found_locale_matcher, MaybeHandle<JSDateTimeFormat>());
-  if (found_locale_matcher.FromJust()) {
-    DCHECK_NOT_NULL(locale_matcher_str.get());
-    if (strcmp(locale_matcher_str.get(), "lookup") == 0) {
-      locale_matcher = Intl::MatcherOption::kLookup;
-    }
-  }
+  Maybe<Intl::MatcherOption> maybe_locale_matcher =
+      Intl::GetLocaleMatcher(isolate, options, "Intl.DateTimeFormat");
+  MAYBE_RETURN(maybe_locale_matcher, MaybeHandle<JSDateTimeFormat>());
+  Intl::MatcherOption locale_matcher = maybe_locale_matcher.FromJust();
 
   // 6. Let hour12 be ? GetOption(options, "hour12", "boolean", undefined,
   // undefined).
@@ -784,10 +775,9 @@ MaybeHandle<JSDateTimeFormat> JSDateTimeFormat::Initialize(
   // 11. Let r be ResolveLocale( %DateTimeFormat%.[[AvailableLocales]],
   //     requestedLocales, opt, %DateTimeFormat%.[[RelevantExtensionKeys]],
   //     localeData).
-  std::set<std::string> available_locales =
-      Intl::GetAvailableLocales(ICUService::kDateFormat);
-  Intl::ResolvedLocale r = Intl::ResolveLocale(
-      isolate, available_locales, requested_locales, locale_matcher, {"nu"});
+  Intl::ResolvedLocale r =
+      Intl::ResolveLocale(isolate, JSDateTimeFormat::GetAvailableLocales(),
+                          requested_locales, locale_matcher, {"nu"});
 
   // TODO(ftang): Make sure that "nu" key doesn't have "native",
   // "traditio" or "finance" values.
@@ -986,5 +976,13 @@ MaybeHandle<Object> JSDateTimeFormat::FormatToParts(
   JSObject::ValidateElements(*result);
   return result;
 }
+
+std::set<std::string> JSDateTimeFormat::GetAvailableLocales() {
+  int32_t num_locales = 0;
+  const icu::Locale* icu_available_locales =
+      icu::DateFormat::getAvailableLocales(num_locales);
+  return Intl::BuildLocaleSet(icu_available_locales, num_locales);
+}
+
 }  // namespace internal
 }  // namespace v8

@@ -999,11 +999,15 @@ void AccessorAssembler::HandleStoreICTransitionMapHandlerCase(
     // 1) name is a non-private symbol and attributes equal to NONE,
     // 2) name is a private symbol and attributes equal to DONT_ENUM.
     Label attributes_ok(this);
-    const int kAttributesDontDeleteReadOnlyMask =
+    const int kKindAndAttributesDontDeleteReadOnlyMask =
+        PropertyDetails::KindField::kMask |
         PropertyDetails::kAttributesDontDeleteMask |
         PropertyDetails::kAttributesReadOnlyMask;
-    // Both DontDelete and ReadOnly attributes must not be set.
-    GotoIf(IsSetWord32(details, kAttributesDontDeleteReadOnlyMask), miss);
+    STATIC_ASSERT(kData == 0);
+    // Both DontDelete and ReadOnly attributes must not be set and it has to be
+    // a kData property.
+    GotoIf(IsSetWord32(details, kKindAndAttributesDontDeleteReadOnlyMask),
+           miss);
 
     // DontEnum attribute is allowed only for private symbols and vice versa.
     Branch(Word32Equal(
@@ -3542,13 +3546,12 @@ void AccessorAssembler::GenerateCloneObjectIC_Slow() {
 
   GotoIfNot(IsEmptyFixedArray(LoadElements(CAST(source))), &call_runtime);
 
-  ForEachEnumerableOwnProperty(
-      context, map, CAST(source),
-      [=](TNode<Name> key, TNode<Object> value) {
-        KeyedStoreGenericGenerator::SetPropertyInLiteral(state(), context,
-                                                         result, key, value);
-      },
-      &call_runtime);
+  ForEachEnumerableOwnProperty(context, map, CAST(source),
+                               [=](TNode<Name> key, TNode<Object> value) {
+                                 SetPropertyInLiteral(context, result, key,
+                                                      value);
+                               },
+                               &call_runtime);
   Goto(&done);
 
   BIND(&call_runtime);

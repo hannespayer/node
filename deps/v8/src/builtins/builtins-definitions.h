@@ -294,8 +294,6 @@ namespace internal {
   CPP(ArrayPrototypeFill)                                                      \
   /* ES6 #sec-array.from */                                                    \
   TFJ(ArrayFrom, SharedFunctionInfo::kDontAdaptArgumentsSentinel)              \
-  /* ES6 #sec-array.of */                                                      \
-  TFJ(ArrayOf, SharedFunctionInfo::kDontAdaptArgumentsSentinel)                \
   /* ES7 #sec-array.prototype.includes */                                      \
   TFS(ArrayIncludesSmiOrObject, kElements, kSearchElement, kLength,            \
       kFromIndex)                                                              \
@@ -435,7 +433,6 @@ namespace internal {
   TFS(AsyncFunctionAwaitUncaught, kAsyncFunctionObject, kValue)                \
   TFJ(AsyncFunctionAwaitRejectClosure, 1, kReceiver, kSentError)               \
   TFJ(AsyncFunctionAwaitResolveClosure, 1, kReceiver, kSentValue)              \
-  TFJ(AsyncFunctionPromiseCreate, 0, kReceiver)                                \
                                                                                \
   /* BigInt */                                                                 \
   CPP(BigIntConstructor)                                                       \
@@ -1330,6 +1327,7 @@ namespace internal {
   ASM(DoubleToI)                                                               \
   TFC(GetProperty, GetProperty, 1)                                             \
   TFS(SetProperty, kReceiver, kKey, kValue)                                    \
+  TFS(SetPropertyInLiteral, kReceiver, kKey, kValue)                           \
   ASM(MathPowInternal)                                                         \
                                                                                \
   /* Trace */                                                                  \
@@ -1337,6 +1335,7 @@ namespace internal {
   CPP(Trace)                                                                   \
                                                                                \
   /* Weak refs */                                                              \
+  CPP(WeakCellClear)                                                           \
   CPP(WeakCellHoldingsGetter)                                                  \
   CPP(WeakFactoryCleanupIteratorNext)                                          \
   CPP(WeakFactoryConstructor)                                                  \
@@ -1371,6 +1370,8 @@ namespace internal {
   CPP(DateTimeFormatPrototypeResolvedOptions)                          \
   /* ecma402 #sec-intl.datetimeformat.supportedlocalesof */            \
   CPP(DateTimeFormatSupportedLocalesOf)                                \
+  /* ecma402 #sec-intl.getcanonicallocales */                          \
+  CPP(IntlGetCanonicalLocales)                                         \
   /* ecma402 #sec-intl-listformat-constructor */                       \
   CPP(ListFormatConstructor)                                           \
   /* ecma402 #sec-intl-list-format.prototype.format */                 \

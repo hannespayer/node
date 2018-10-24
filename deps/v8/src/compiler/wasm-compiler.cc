@@ -98,6 +98,17 @@ MachineType assert_size(int expected_size, MachineType type) {
   LOAD_TAGGED_POINTER(                           \
       array_node, wasm::ObjectAccess::ElementOffsetInTaggedFixedArray(index))
 
+// TODO(mstarzinger): This macro only works for Smi values and needs to be
+// extended appropriately before it can be used for tagged pointers.
+#define STORE_FIXED_ARRAY_SLOT(array_node, index, value)               \
+  SetEffect(graph()->NewNode(                                          \
+      mcgraph()->machine()->Store(StoreRepresentation(                 \
+          MachineRepresentation::kTaggedSigned, kNoWriteBarrier)),     \
+      array_node,                                                      \
+      mcgraph()->Int32Constant(                                        \
+          wasm::ObjectAccess::ElementOffsetInTaggedFixedArray(index)), \
+      value, Effect(), Control()))
+
 constexpr uint32_t kBytesPerExceptionValuesArrayElement = 2;
 
 void MergeControlToEnd(MachineGraph* mcgraph, Node* node) {
@@ -125,7 +136,7 @@ bool ContainsInt64(wasm::FunctionSig* sig) {
 }  // namespace
 
 WasmGraphBuilder::WasmGraphBuilder(
-    wasm::ModuleEnv* env, Zone* zone, MachineGraph* mcgraph,
+    wasm::CompilationEnv* env, Zone* zone, MachineGraph* mcgraph,
     wasm::FunctionSig* sig,
     compiler::SourcePositionTable* source_position_table)
     : zone_(zone),
@@ -2055,6 +2066,8 @@ Node* WasmGraphBuilder::Throw(uint32_t exception_index,
   Node* except_obj =
       BuildCallToRuntime(Runtime::kWasmThrowCreate, create_parameters,
                          arraysize(create_parameters));
+  Node* values_array =
+      BuildCallToRuntime(Runtime::kWasmExceptionGetValues, &except_obj, 1);
   uint32_t index = 0;
   const wasm::WasmExceptionSig* sig = exception->sig;
   MachineOperatorBuilder* m = mcgraph()->machine();
@@ -2065,7 +2078,7 @@ Node* WasmGraphBuilder::Throw(uint32_t exception_index,
         value = graph()->NewNode(m->BitcastFloat32ToInt32(), value);
         V8_FALLTHROUGH;
       case wasm::kWasmI32:
-        BuildEncodeException32BitValue(except_obj, &index, value);
+        BuildEncodeException32BitValue(values_array, &index, value);
         break;
       case wasm::kWasmF64:
         value = graph()->NewNode(m->BitcastFloat64ToInt64(), value);
@@ -2074,9 +2087,9 @@ Node* WasmGraphBuilder::Throw(uint32_t exception_index,
         Node* upper32 = graph()->NewNode(
             m->TruncateInt64ToInt32(),
             Binop(wasm::kExprI64ShrU, value, Int64Constant(32)));
-        BuildEncodeException32BitValue(except_obj, &index, upper32);
+        BuildEncodeException32BitValue(values_array, &index, upper32);
         Node* lower32 = graph()->NewNode(m->TruncateInt64ToInt32(), value);
-        BuildEncodeException32BitValue(except_obj, &index, lower32);
+        BuildEncodeException32BitValue(values_array, &index, lower32);
         break;
       }
       default:
@@ -2096,25 +2109,17 @@ Node* WasmGraphBuilder::Throw(uint32_t exception_index,
                        except_obj, Effect(), Control())));
 }
 
-void WasmGraphBuilder::BuildEncodeException32BitValue(Node* except_obj,
+void WasmGraphBuilder::BuildEncodeException32BitValue(Node* values_array,
                                                       uint32_t* index,
                                                       Node* value) {
   MachineOperatorBuilder* machine = mcgraph()->machine();
-  Node* upper_parameters[] = {
-      except_obj, BuildChangeUint31ToSmi(Int32Constant(*index)),
-      BuildChangeUint31ToSmi(
-          graph()->NewNode(machine->Word32Shr(), value, Int32Constant(16))),
-  };
-  BuildCallToRuntime(Runtime::kWasmExceptionSetElement, upper_parameters,
-                     arraysize(upper_parameters));
+  Node* upper_halfword_as_smi = BuildChangeUint31ToSmi(
+      graph()->NewNode(machine->Word32Shr(), value, Int32Constant(16)));
+  STORE_FIXED_ARRAY_SLOT(values_array, *index, upper_halfword_as_smi);
   ++(*index);
-  Node* lower_parameters[] = {
-      except_obj, BuildChangeUint31ToSmi(Int32Constant(*index)),
-      BuildChangeUint31ToSmi(graph()->NewNode(machine->Word32And(), value,
-                                              Int32Constant(0xFFFFu))),
-  };
-  BuildCallToRuntime(Runtime::kWasmExceptionSetElement, lower_parameters,
-                     arraysize(lower_parameters));
+  Node* lower_halfword_as_smi = BuildChangeUint31ToSmi(
+      graph()->NewNode(machine->Word32And(), value, Int32Constant(0xFFFFu)));
+  STORE_FIXED_ARRAY_SLOT(values_array, *index, lower_halfword_as_smi);
   ++(*index);
 }
 
@@ -2169,13 +2174,12 @@ Node** WasmGraphBuilder::GetExceptionValues(
   // call causes an exception.
 
   // Start by getting the encoded values from the exception.
+  Node* values_array =
+      BuildCallToRuntime(Runtime::kWasmExceptionGetValues, &except_obj, 1);
   uint32_t encoded_size = GetExceptionEncodedSize(except_decl);
   Node** values = Buffer(encoded_size);
   for (uint32_t i = 0; i < encoded_size; ++i) {
-    Node* parameters[] = {except_obj,
-                          BuildChangeUint31ToSmi(Uint32Constant(i))};
-    values[i] = BuildCallToRuntime(Runtime::kWasmExceptionGetElement,
-                                   parameters, arraysize(parameters));
+    values[i] = LOAD_FIXED_ARRAY_SLOT(values_array, i);
   }
 
   // Now convert the leading entries to the corresponding parameter values.
@@ -4059,8 +4063,8 @@ void RecordFunctionCompilation(CodeEventListener::LogEventsAndTags tag,
 
 class WasmWrapperGraphBuilder : public WasmGraphBuilder {
  public:
-  WasmWrapperGraphBuilder(Zone* zone, wasm::ModuleEnv* env, JSGraph* jsgraph,
-                          wasm::FunctionSig* sig,
+  WasmWrapperGraphBuilder(Zone* zone, wasm::CompilationEnv* env,
+                          JSGraph* jsgraph, wasm::FunctionSig* sig,
                           compiler::SourcePositionTable* spt,
                           StubCallMode stub_mode)
       : WasmGraphBuilder(env, zone, jsgraph, sig, spt),
@@ -4876,8 +4880,8 @@ MaybeHandle<Code> CompileJSToWasmWrapper(Isolate* isolate,
   Node* control = nullptr;
   Node* effect = nullptr;
 
-  wasm::ModuleEnv env(nullptr, wasm::kNoTrapHandler,
-                      wasm::kRuntimeExceptionSupport);
+  wasm::CompilationEnv env(nullptr, wasm::kNoTrapHandler,
+                           wasm::kRuntimeExceptionSupport);
   WasmWrapperGraphBuilder builder(&zone, &env, &jsgraph, sig, nullptr,
                                   StubCallMode::kCallOnHeapBuiltin);
   builder.set_control_ptr(&control);
@@ -4986,8 +4990,8 @@ MaybeHandle<Code> CompileWasmImportCallWrapper(Isolate* isolate,
   SourcePositionTable* source_position_table =
       source_positions ? new (&zone) SourcePositionTable(&graph) : nullptr;
 
-  wasm::ModuleEnv env(nullptr, wasm::kNoTrapHandler,
-                      wasm::kRuntimeExceptionSupport);
+  wasm::CompilationEnv env(nullptr, wasm::kNoTrapHandler,
+                           wasm::kRuntimeExceptionSupport);
 
   WasmWrapperGraphBuilder builder(&zone, &env, &jsgraph, sig,
                                   source_position_table,
@@ -5140,8 +5144,8 @@ TurbofanWasmCompilationUnit::TurbofanWasmCompilationUnit(
 TurbofanWasmCompilationUnit::~TurbofanWasmCompilationUnit() = default;
 
 SourcePositionTable* TurbofanWasmCompilationUnit::BuildGraphForWasmFunction(
-    wasm::WasmFeatures* detected, double* decode_ms, MachineGraph* mcgraph,
-    NodeOriginTable* node_origins) {
+    wasm::CompilationEnv* env, wasm::WasmFeatures* detected, double* decode_ms,
+    MachineGraph* mcgraph, NodeOriginTable* node_origins) {
   base::ElapsedTimer decode_timer;
   if (FLAG_trace_wasm_decode_time) {
     decode_timer.Start();
@@ -5150,24 +5154,26 @@ SourcePositionTable* TurbofanWasmCompilationUnit::BuildGraphForWasmFunction(
   // Create a TF graph during decoding.
   SourcePositionTable* source_position_table =
       new (mcgraph->zone()) SourcePositionTable(mcgraph->graph());
-  WasmGraphBuilder builder(wasm_unit_->env_, mcgraph->zone(), mcgraph,
+  WasmGraphBuilder builder(env, mcgraph->zone(), mcgraph,
                            wasm_unit_->func_body_.sig, source_position_table);
-  graph_construction_result_ = wasm::BuildTFGraph(
+  wasm::VoidResult graph_construction_result = wasm::BuildTFGraph(
       wasm_unit_->wasm_engine_->allocator(),
-      wasm_unit_->native_module_->enabled_features(), wasm_unit_->env_->module,
-      &builder, detected, wasm_unit_->func_body_, node_origins);
-  if (graph_construction_result_.failed()) {
+      wasm_unit_->native_module_->enabled_features(), env->module, &builder,
+      detected, wasm_unit_->func_body_, node_origins);
+  if (graph_construction_result.failed()) {
     if (FLAG_trace_wasm_compiler) {
       StdoutStream{} << "Compilation failed: "
-                     << graph_construction_result_.error_msg() << std::endl;
+                     << graph_construction_result.error_msg() << std::endl;
     }
+    wasm_unit_->result_ = wasm::Result<wasm::WasmCode*>::ErrorFrom(
+        std::move(graph_construction_result));
     return nullptr;
   }
 
   builder.LowerInt64();
 
   if (builder.has_simd() &&
-      (!CpuFeatures::SupportsWasmSimd128() || wasm_unit_->env_->lower_simd)) {
+      (!CpuFeatures::SupportsWasmSimd128() || env->lower_simd)) {
     SimdScalarLowering(
         mcgraph,
         CreateMachineSignature(mcgraph->zone(), wasm_unit_->func_body_.sig))
@@ -5177,8 +5183,7 @@ SourcePositionTable* TurbofanWasmCompilationUnit::BuildGraphForWasmFunction(
   if (wasm_unit_->func_index_ >= FLAG_trace_wasm_ast_start &&
       wasm_unit_->func_index_ < FLAG_trace_wasm_ast_end) {
     PrintRawWasmCode(wasm_unit_->wasm_engine_->allocator(),
-                     wasm_unit_->func_body_, wasm_unit_->env_->module,
-                     wasm::kPrintLocals);
+                     wasm_unit_->func_body_, env->module, wasm::kPrintLocals);
   }
   if (FLAG_trace_wasm_decode_time) {
     *decode_ms = decode_timer.Elapsed().InMillisecondsF();
@@ -5199,124 +5204,80 @@ Vector<const char> GetDebugName(Zone* zone, int index) {
   memcpy(index_name, name_vector.start(), name_len);
   return Vector<const char>(index_name, name_len);
 }
-
 }  // namespace
 
 void TurbofanWasmCompilationUnit::ExecuteCompilation(
-    wasm::WasmFeatures* detected) {
+    wasm::CompilationEnv* env, wasm::WasmFeatures* detected) {
   TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.wasm"),
                "ExecuteTurbofanCompilation");
   double decode_ms = 0;
   size_t node_count = 0;
 
-  // Scope for the {graph_zone}.
-  {
-    Zone graph_zone(wasm_unit_->wasm_engine_->allocator(), ZONE_NAME);
-    MachineGraph* mcgraph = new (&graph_zone)
-        MachineGraph(new (&graph_zone) Graph(&graph_zone),
-                     new (&graph_zone) CommonOperatorBuilder(&graph_zone),
-                     new (&graph_zone) MachineOperatorBuilder(
-                         &graph_zone, MachineType::PointerRepresentation(),
-                         InstructionSelector::SupportedMachineOperatorFlags(),
-                         InstructionSelector::AlignmentRequirements()));
+  Zone zone(wasm_unit_->wasm_engine_->allocator(), ZONE_NAME);
+  MachineGraph* mcgraph = new (&zone) MachineGraph(
+      new (&zone) Graph(&zone), new (&zone) CommonOperatorBuilder(&zone),
+      new (&zone) MachineOperatorBuilder(
+          &zone, MachineType::PointerRepresentation(),
+          InstructionSelector::SupportedMachineOperatorFlags(),
+          InstructionSelector::AlignmentRequirements()));
 
-    Zone compilation_zone(wasm_unit_->wasm_engine_->allocator(), ZONE_NAME);
-
-    OptimizedCompilationInfo info(
-        GetDebugName(&compilation_zone, wasm_unit_->func_index_),
-        &compilation_zone, Code::WASM_FUNCTION);
-    if (wasm_unit_->env_->runtime_exception_support) {
-      info.SetWasmRuntimeExceptionSupport();
-    }
-
-    if (info.trace_turbo_json_enabled()) {
-      TurboCfgFile tcf;
-      tcf << AsC1VCompilation(&info);
-    }
-
-    NodeOriginTable* node_origins = info.trace_turbo_json_enabled()
-                                        ? new (&graph_zone)
-                                              NodeOriginTable(mcgraph->graph())
-                                        : nullptr;
-    SourcePositionTable* source_positions =
-        BuildGraphForWasmFunction(detected, &decode_ms, mcgraph, node_origins);
-
-    if (graph_construction_result_.failed()) {
-      ok_ = false;
-      return;
-    }
-
-    if (node_origins) {
-      node_origins->AddDecorator();
-    }
-
-    base::ElapsedTimer pipeline_timer;
-    if (FLAG_trace_wasm_decode_time) {
-      node_count = mcgraph->graph()->NodeCount();
-      pipeline_timer.Start();
-    }
-
-    // Run the compiler pipeline to generate machine code.
-    auto call_descriptor =
-        GetWasmCallDescriptor(&compilation_zone, wasm_unit_->func_body_.sig);
-    if (mcgraph->machine()->Is32()) {
-      call_descriptor =
-          GetI32WasmCallDescriptor(&compilation_zone, call_descriptor);
-    }
-
-    std::unique_ptr<OptimizedCompilationJob> job(
-        Pipeline::NewWasmCompilationJob(
-            &info, wasm_unit_->wasm_engine_, mcgraph, call_descriptor,
-            source_positions, node_origins, wasm_unit_->func_body_,
-            const_cast<wasm::WasmModule*>(wasm_unit_->env_->module),
-            wasm_unit_->native_module_, wasm_unit_->func_index_,
-            wasm_unit_->env_->module->origin));
-    ok_ = job->ExecuteJob() == CompilationJob::SUCCEEDED;
-    // TODO(bradnelson): Improve histogram handling of size_t.
-    wasm_unit_->counters_->wasm_compile_function_peak_memory_bytes()->AddSample(
-        static_cast<int>(mcgraph->graph()->zone()->allocation_size()));
-
-    if (FLAG_trace_wasm_decode_time) {
-      double pipeline_ms = pipeline_timer.Elapsed().InMillisecondsF();
-      PrintF(
-          "wasm-compilation phase 1 ok: %u bytes, %0.3f ms decode, %zu nodes, "
-          "%0.3f ms pipeline\n",
-          static_cast<unsigned>(wasm_unit_->func_body_.end -
-                                wasm_unit_->func_body_.start),
-          decode_ms, node_count, pipeline_ms);
-    }
-    if (ok_) wasm_code_ = info.wasm_code();
+  OptimizedCompilationInfo info(GetDebugName(&zone, wasm_unit_->func_index_),
+                                &zone, Code::WASM_FUNCTION);
+  if (env->runtime_exception_support) {
+    info.SetWasmRuntimeExceptionSupport();
   }
-  if (ok_) wasm_unit_->native_module()->PublishCode(wasm_code_);
-}
 
-wasm::WasmCode* TurbofanWasmCompilationUnit::FinishCompilation(
-    wasm::ErrorThrower* thrower) {
-  if (!ok_) {
-    if (graph_construction_result_.failed()) {
-      // Add the function as another context for the exception. This is
-      // user-visible, so use official format.
-      EmbeddedVector<char, 128> message;
-      wasm::ModuleWireBytes wire_bytes(
-          wasm_unit_->native_module()->wire_bytes());
-      wasm::WireBytesRef name_ref =
-          wasm_unit_->native_module()->module()->LookupFunctionName(
-              wire_bytes, wasm_unit_->func_index_);
-      if (name_ref.is_set()) {
-        wasm::WasmName name = wire_bytes.GetNameOrNull(name_ref);
-        SNPrintF(message, "Compiling wasm function \"%.*s\" failed",
-                 name.length(), name.start());
-      } else {
-        SNPrintF(message,
-                 "Compiling wasm function \"wasm-function[%d]\" failed",
-                 wasm_unit_->func_index_);
-      }
-      thrower->CompileFailed(message.start(), graph_construction_result_);
-    }
-
-    return nullptr;
+  if (info.trace_turbo_json_enabled()) {
+    TurboCfgFile tcf;
+    tcf << AsC1VCompilation(&info);
   }
-  return wasm_code_;
+
+  NodeOriginTable* node_origins = info.trace_turbo_json_enabled()
+                                      ? new (&zone)
+                                            NodeOriginTable(mcgraph->graph())
+                                      : nullptr;
+  SourcePositionTable* source_positions = BuildGraphForWasmFunction(
+      env, detected, &decode_ms, mcgraph, node_origins);
+
+  if (wasm_unit_->failed()) return;
+
+  if (node_origins) {
+    node_origins->AddDecorator();
+  }
+
+  base::ElapsedTimer pipeline_timer;
+  if (FLAG_trace_wasm_decode_time) {
+    node_count = mcgraph->graph()->NodeCount();
+    pipeline_timer.Start();
+  }
+
+  // Run the compiler pipeline to generate machine code.
+  auto call_descriptor =
+      GetWasmCallDescriptor(&zone, wasm_unit_->func_body_.sig);
+  if (mcgraph->machine()->Is32()) {
+    call_descriptor = GetI32WasmCallDescriptor(&zone, call_descriptor);
+  }
+
+  std::unique_ptr<OptimizedCompilationJob> job(Pipeline::NewWasmCompilationJob(
+      &info, wasm_unit_->wasm_engine_, mcgraph, call_descriptor,
+      source_positions, node_origins, wasm_unit_->func_body_,
+      const_cast<wasm::WasmModule*>(env->module), wasm_unit_->native_module_,
+      wasm_unit_->func_index_, env->module->origin));
+  if (job->ExecuteJob() == CompilationJob::SUCCEEDED) {
+    wasm_unit_->SetResult(info.wasm_code());
+  }
+  if (FLAG_trace_wasm_decode_time) {
+    double pipeline_ms = pipeline_timer.Elapsed().InMillisecondsF();
+    PrintF(
+        "wasm-compilation phase 1 ok: %u bytes, %0.3f ms decode, %zu nodes, "
+        "%0.3f ms pipeline\n",
+        static_cast<unsigned>(wasm_unit_->func_body_.end -
+                              wasm_unit_->func_body_.start),
+        decode_ms, node_count, pipeline_ms);
+  }
+  // TODO(bradnelson): Improve histogram handling of size_t.
+  wasm_unit_->counters_->wasm_compile_function_peak_memory_bytes()->AddSample(
+      static_cast<int>(mcgraph->graph()->zone()->allocation_size()));
 }
 
 namespace {
@@ -5524,6 +5485,7 @@ AssemblerOptions WasmAssemblerOptions() {
 #undef LOAD_INSTANCE_FIELD
 #undef LOAD_TAGGED_POINTER
 #undef LOAD_FIXED_ARRAY_SLOT
+#undef STORE_FIXED_ARRAY_SLOT
 
 }  // namespace compiler
 }  // namespace internal

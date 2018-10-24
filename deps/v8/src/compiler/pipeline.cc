@@ -1213,7 +1213,7 @@ struct InliningPhase {
                                data->info()->is_bailout_on_uninitialized()
                                    ? JSCallReducer::kBailoutOnUninitialized
                                    : JSCallReducer::kNoFlags,
-                               data->native_context(), data->dependencies());
+                               data->dependencies());
     JSContextSpecialization context_specialization(
         &graph_reducer, data->jsgraph(), data->broker(),
         ChooseSpecializationContext(isolate, data->info()),
@@ -2549,10 +2549,6 @@ void PipelineImpl::AssembleCode(Linkage* linkage) {
   PipelineData* data = this->data_;
   data->BeginPhaseKind("code generation");
   data->InitializeCodeGenerator(linkage);
-
-#if defined(V8_TARGET_ARCH_IA32) && defined(V8_EMBEDDED_BUILTINS)
-  code_generator()->tasm()->set_ebx_addressable(false);
-#endif
 
   Run<AssembleCodePhase>();
   if (data->info()->trace_turbo_json_enabled()) {

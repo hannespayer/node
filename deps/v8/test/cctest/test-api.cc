@@ -8999,13 +8999,13 @@ THREADED_TEST(ToArrayIndex) {
 
 static v8::MaybeLocal<Value> PrepareStackTrace42(v8::Local<Context> context,
                                                  v8::Local<Value> error,
-                                                 v8::Local<StackTrace> trace) {
+                                                 v8::Local<Array> trace) {
   return v8::Number::New(context->GetIsolate(), 42);
 }
 
-static v8::MaybeLocal<Value> PrepareStackTraceThrow(
-    v8::Local<Context> context, v8::Local<Value> error,
-    v8::Local<StackTrace> trace) {
+static v8::MaybeLocal<Value> PrepareStackTraceThrow(v8::Local<Context> context,
+                                                    v8::Local<Value> error,
+                                                    v8::Local<Array> trace) {
   v8::Isolate* isolate = context->GetIsolate();
   v8::Local<String> message = v8_str("42");
   isolate->ThrowException(v8::Exception::Error(message));
@@ -19322,6 +19322,8 @@ TEST(GetHeapSpaceStatistics) {
     CHECK_GT(space_statistics.physical_space_size(), 0u);
     total_physical_size += space_statistics.physical_space_size();
   }
+  total_available_size += CcTest::heap()->memory_allocator()->Available();
+
   CHECK_EQ(total_size, heap_statistics.total_heap_size());
   CHECK_EQ(total_used_size, heap_statistics.used_heap_size());
   CHECK_EQ(total_available_size, heap_statistics.total_available_size());
@@ -23024,7 +23026,9 @@ void TestStubCache(bool primary) {
   } else {
     i::FLAG_test_secondary_stub_cache = true;
   }
+#ifndef V8_LITE_MODE
   i::FLAG_opt = false;
+#endif  // V8_LITE_MODE
 
   v8::Isolate::CreateParams create_params;
   create_params.array_buffer_allocator = CcTest::array_buffer_allocator();
@@ -23964,7 +23968,9 @@ TEST(AccessCheckThrows) {
 
 TEST(AccessCheckInIC) {
   i::FLAG_native_code_counters = true;
+#ifndef V8_LITE_MODE
   i::FLAG_opt = false;
+#endif  // V8_LITE_MODE
 
   v8::Isolate::CreateParams create_params;
   create_params.array_buffer_allocator = CcTest::array_buffer_allocator();
@@ -25296,7 +25302,6 @@ TEST(DisallowJavascriptExecutionScope) {
   CompileRun("2+2");
 }
 
-
 TEST(AllowJavascriptExecutionScope) {
   LocalContext context;
   v8::Isolate* isolate = context->GetIsolate();
@@ -25310,7 +25315,6 @@ TEST(AllowJavascriptExecutionScope) {
   }
 }
 
-
 TEST(ThrowOnJavascriptExecution) {
   LocalContext context;
   v8::Isolate* isolate = context->GetIsolate();
@@ -25322,6 +25326,40 @@ TEST(ThrowOnJavascriptExecution) {
   CHECK(try_catch.HasCaught());
 }
 
+namespace {
+
+class MockPlatform : public TestPlatform {
+ public:
+  MockPlatform() {
+    // Now that it's completely constructed, make this the current platform.
+    i::V8::SetPlatformForTesting(this);
+  }
+  ~MockPlatform() override = default;
+
+  bool dump_without_crashing_called() const {
+    return dump_without_crashing_called_;
+  }
+
+  void DumpWithoutCrashing() override { dump_without_crashing_called_ = true; }
+
+ private:
+  bool dump_without_crashing_called_ = false;
+};
+
+}  // namespace
+
+TEST(DumpOnJavascriptExecution) {
+  MockPlatform platform;
+
+  LocalContext context;
+  v8::Isolate* isolate = context->GetIsolate();
+  v8::HandleScope scope(isolate);
+  v8::Isolate::DisallowJavascriptExecutionScope throw_js(
+      isolate, v8::Isolate::DisallowJavascriptExecutionScope::DUMP_ON_FAILURE);
+  CHECK(!platform.dump_without_crashing_called());
+  CompileRun("1+1");
+  CHECK(platform.dump_without_crashing_called());
+}
 
 TEST(Regress354123) {
   LocalContext current;
@@ -26567,6 +26605,7 @@ TEST(StringConcatOverflow) {
 }
 
 TEST(TurboAsmDisablesNeuter) {
+#ifndef V8_LITE_MODE
   i::FLAG_opt = true;
   i::FLAG_allow_natives_syntax = true;
   v8::V8::Initialize();
@@ -26603,6 +26642,7 @@ TEST(TurboAsmDisablesNeuter) {
 
   result = CompileRun(store).As<v8::ArrayBuffer>();
   CHECK(!result->IsNeuterable());
+#endif  // V8_LITE_MODE
 }
 
 

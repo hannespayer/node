@@ -178,19 +178,10 @@ MaybeHandle<JSListFormat> JSListFormat::Initialize(
 
   // 12. Let matcher be ? GetOption(options, "localeMatcher", "string", «
   // "lookup", "best fit" », "best fit").
-  const std::vector<const char*> values = {"lookup", "best fit"};
-  std::unique_ptr<char[]> matcher_str = nullptr;
-  Intl::MatcherOption matcher = Intl::MatcherOption::kBestFit;
-  Maybe<bool> found_matcher =
-      Intl::GetStringOption(isolate, options, "localeMatcher", values,
-                            "Intl.ListFormat", &matcher_str);
-  MAYBE_RETURN(found_matcher, MaybeHandle<JSListFormat>());
-  if (found_matcher.FromJust()) {
-    DCHECK_NOT_NULL(matcher_str.get());
-    if (strcmp(matcher_str.get(), "lookup") == 0) {
-      matcher = Intl::MatcherOption::kLookup;
-    }
-  }
+  Maybe<Intl::MatcherOption> maybe_locale_matcher =
+      Intl::GetLocaleMatcher(isolate, options, "Intl.ListFormat");
+  MAYBE_RETURN(maybe_locale_matcher, MaybeHandle<JSListFormat>());
+  Intl::MatcherOption matcher = maybe_locale_matcher.FromJust();
 
   // 14. If style is "narrow" and type is not "unit", throw a RangeError
   // exception.
@@ -202,10 +193,9 @@ MaybeHandle<JSListFormat> JSListFormat::Initialize(
 
   // 15. Let r be ResolveLocale(%ListFormat%.[[AvailableLocales]],
   // requestedLocales, opt, undefined, localeData).
-  std::set<std::string> available_locales =
-      Intl::GetAvailableLocales(ICUService::kListFormatter);
-  Intl::ResolvedLocale r = Intl::ResolveLocale(isolate, available_locales,
-                                               requested_locales, matcher, {});
+  Intl::ResolvedLocale r =
+      Intl::ResolveLocale(isolate, JSListFormat::GetAvailableLocales(),
+                          requested_locales, matcher, {});
 
   // 24. Set listFormat.[[Locale]] to r.[[Locale]].
   Handle<String> locale_str =
@@ -353,13 +343,7 @@ Maybe<bool> ToUnicodeStringArray(Isolate* isolate, Handle<JSArray> array,
   }
   for (uint32_t i = 0; i < length; i++) {
     Handle<String> string = Handle<String>::cast(accessor->Get(array, i));
-    DisallowHeapAllocation no_gc;
-    string = String::Flatten(isolate, string);
-    std::unique_ptr<uc16[]> sap;
-    items[i] =
-        icu::UnicodeString(GetUCharBufferFromFlat(string->GetFlatContent(),
-                                                  &sap, string->length()),
-                           string->length());
+    items[i] = Intl::ToICUUnicodeString(isolate, string);
   }
   return Just(true);
 }
@@ -415,6 +399,17 @@ MaybeHandle<JSArray> JSListFormat::FormatListToParts(
       FormatListCommon(isolate, format_holder, list, formatted, &length, array),
       Handle<JSArray>());
   return GenerateListFormatParts(isolate, formatted, array.get(), length);
+}
+
+std::set<std::string> JSListFormat::GetAvailableLocales() {
+  int32_t num_locales = 0;
+  // TODO(ftang): for now just use
+  // icu::Locale::getAvailableLocales(count) until we migrate to
+  // Intl::GetAvailableLocales().
+  // ICU FR at https://unicode-org.atlassian.net/browse/ICU-20015
+  const icu::Locale* icu_available_locales =
+      icu::Locale::getAvailableLocales(num_locales);
+  return Intl::BuildLocaleSet(icu_available_locales, num_locales);
 }
 
 }  // namespace internal

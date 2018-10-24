@@ -150,30 +150,19 @@ TF_BUILTIN(AsyncFunctionEnter, AsyncFunctionBuiltinsAssembler) {
   StoreObjectFieldNoWriteBarrier(
       async_function_object, JSAsyncFunctionObject::kPromiseOffset, promise);
 
-  // Fire promise hooks if enabled.
-  Label if_hooks(this, Label::kDeferred), if_hooks_done(this);
-  Branch(IsPromiseHookEnabledOrHasAsyncEventDelegate(), &if_hooks,
-         &if_hooks_done);
-  BIND(&if_hooks);
+  // Fire promise hooks if enabled and push the Promise under construction
+  // in an async function on the catch prediction stack to handle exceptions
+  // thrown before the first await.
+  Label if_instrumentation(this, Label::kDeferred),
+      if_instrumentation_done(this);
+  Branch(IsPromiseHookEnabledOrDebugIsActiveOrHasAsyncEventDelegate(),
+         &if_instrumentation, &if_instrumentation_done);
+  BIND(&if_instrumentation);
   {
-    CallRuntime(Runtime::kPromiseHookInit, context, promise,
-                UndefinedConstant());
-    Goto(&if_hooks_done);
+    CallRuntime(Runtime::kDebugAsyncFunctionEntered, context, promise);
+    Goto(&if_instrumentation_done);
   }
-  BIND(&if_hooks_done);
-
-  // Push the Promise under construction in an async function on the
-  // catch prediction stack to handle exceptions thrown before the
-  // first await.
-  // TODO(bmeurer): Combine this with the hooks above.
-  Label if_debug(this, Label::kDeferred), if_debug_done(this);
-  Branch(IsDebugActive(), &if_debug, &if_debug_done);
-  BIND(&if_debug);
-  {
-    CallRuntime(Runtime::kDebugPushPromise, context, promise);
-    Goto(&if_debug_done);
-  }
-  BIND(&if_debug_done);
+  BIND(&if_instrumentation_done);
 
   Return(async_function_object);
 }
@@ -301,28 +290,6 @@ TF_BUILTIN(AsyncFunctionAwaitCaught, AsyncFunctionBuiltinsAssembler) {
 TF_BUILTIN(AsyncFunctionAwaitUncaught, AsyncFunctionBuiltinsAssembler) {
   static const bool kIsPredictedAsCaught = false;
   AsyncFunctionAwait<Descriptor>(kIsPredictedAsCaught);
-}
-
-TF_BUILTIN(AsyncFunctionPromiseCreate, AsyncFunctionBuiltinsAssembler) {
-  CSA_ASSERT_JS_ARGC_EQ(this, 0);
-  Node* const context = Parameter(Descriptor::kContext);
-
-  Node* const promise = AllocateAndInitJSPromise(context);
-
-  Label if_is_debug_active(this, Label::kDeferred);
-  GotoIf(IsDebugActive(), &if_is_debug_active);
-
-  // Early exit if debug is not active.
-  Return(promise);
-
-  BIND(&if_is_debug_active);
-  {
-    // Push the Promise under construction in an async function on
-    // the catch prediction stack to handle exceptions thrown before
-    // the first await.
-    CallRuntime(Runtime::kDebugPushPromise, context, promise);
-    Return(promise);
-  }
 }
 
 }  // namespace internal

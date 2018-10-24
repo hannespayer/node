@@ -341,6 +341,12 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
     return CAST(heap_object);
   }
 
+  TNode<JSReceiver> HeapObjectToConstructor(TNode<HeapObject> heap_object,
+                                            Label* fail) {
+    GotoIfNot(IsConstructor(heap_object), fail);
+    return CAST(heap_object);
+  }
+
   TNode<HeapNumber> UnsafeCastNumberToHeapNumber(TNode<Number> p_n) {
     return CAST(p_n);
   }
@@ -423,6 +429,14 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
     return TNode<JSArgumentsObjectWithLength>::UncheckedCast(p_o);
   }
 
+  TNode<JSArray> RawCastObjectToFastJSArray(TNode<Object> p_o) {
+    return TNode<JSArray>::UncheckedCast(p_o);
+  }
+
+  TNode<JSArray> RawCastObjectToFastJSArrayForCopy(TNode<Object> p_o) {
+    return TNode<JSArray>::UncheckedCast(p_o);
+  }
+
   Node* MatchesParameterMode(Node* value, ParameterMode mode);
 
 #define PARAMETER_BINOP(OpName, IntPtrOpName, SmiOpName) \
@@ -495,9 +509,9 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   TNode<Float64T> Float64RoundToEven(SloppyTNode<Float64T> x);
   TNode<Float64T> Float64Trunc(SloppyTNode<Float64T> x);
   // Select the minimum of the two provided Number values.
-  TNode<Object> NumberMax(SloppyTNode<Object> left, SloppyTNode<Object> right);
+  TNode<Number> NumberMax(SloppyTNode<Number> left, SloppyTNode<Number> right);
   // Select the minimum of the two provided Number values.
-  TNode<Object> NumberMin(SloppyTNode<Object> left, SloppyTNode<Object> right);
+  TNode<Number> NumberMin(SloppyTNode<Number> left, SloppyTNode<Number> right);
 
   // After converting an index to an integer, calculate a relative index: if
   // index < 0, max(length + index, 0); else min(index, length)
@@ -695,6 +709,13 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
     }
     return UncheckedCast<Object>(CallJS(CodeFactory::Call(isolate()), context,
                                         callable, receiver, args...));
+  }
+
+  template <class... TArgs>
+  TNode<JSReceiver> Construct(TNode<Context> context,
+                              TNode<JSReceiver> new_target, TArgs... args) {
+    return CAST(ConstructJS(CodeFactory::Construct(isolate()), context,
+                            new_target, implicit_cast<TNode<Object>>(args)...));
   }
 
   template <class A, class F, class G>
@@ -1536,9 +1557,11 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   Node* AllocateJSIteratorResult(Node* context, Node* value, Node* done);
   Node* AllocateJSIteratorResultForEntry(Node* context, Node* key, Node* value);
 
-  Node* ArraySpeciesCreate(TNode<Context> context, TNode<Object> originalArray,
-                           TNode<Number> len);
-  Node* InternalArrayCreate(TNode<Context> context, TNode<Number> len);
+  TNode<JSReceiver> ArraySpeciesCreate(TNode<Context> context,
+                                       TNode<Object> originalArray,
+                                       TNode<Number> len);
+  TNode<JSReceiver> InternalArrayCreate(TNode<Context> context,
+                                        TNode<Number> len);
 
   void FillFixedArrayWithValue(ElementsKind kind, Node* array, Node* from_index,
                                Node* to_index, RootIndex value_root_index,
@@ -1637,6 +1660,14 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
         WordNotEqual(LoadMap(base), LoadRoot(RootIndex::kFixedDoubleArrayMap)),
         cast_fail);
     return UncheckedCast<FixedDoubleArray>(base);
+  }
+
+  TNode<FixedArray> HeapObjectToSloppyArgumentsElements(TNode<HeapObject> base,
+                                                        Label* cast_fail) {
+    GotoIf(WordNotEqual(LoadMap(base),
+                        LoadRoot(RootIndex::kSloppyArgumentsElementsMap)),
+           cast_fail);
+    return UncheckedCast<FixedArray>(base);
   }
 
   TNode<Int32T> ConvertElementsKindToInt(TNode<Int32T> elements_kind) {
@@ -1959,6 +1990,7 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   TNode<BoolT> IsEphemeronHashTable(SloppyTNode<HeapObject> object);
   TNode<BoolT> IsHeapNumber(SloppyTNode<HeapObject> object);
   TNode<BoolT> IsHeapNumberInstanceType(SloppyTNode<Int32T> instance_type);
+  TNode<BoolT> IsOddball(SloppyTNode<HeapObject> object);
   TNode<BoolT> IsOddballInstanceType(SloppyTNode<Int32T> instance_type);
   TNode<BoolT> IsIndirectStringInstanceType(SloppyTNode<Int32T> instance_type);
   TNode<BoolT> IsJSArrayBuffer(SloppyTNode<HeapObject> object);
@@ -2008,6 +2040,14 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
                                                 SloppyTNode<Map> map);
   TNode<BoolT> IsPrototypeTypedArrayPrototype(SloppyTNode<Context> context,
                                               SloppyTNode<Map> map);
+
+  TNode<BoolT> IsFastAliasedArgumentsMap(TNode<Context> context,
+                                         TNode<Map> map);
+  TNode<BoolT> IsSlowAliasedArgumentsMap(TNode<Context> context,
+                                         TNode<Map> map);
+  TNode<BoolT> IsSloppyArgumentsMap(TNode<Context> context, TNode<Map> map);
+  TNode<BoolT> IsStrictArgumentsMap(TNode<Context> context, TNode<Map> map);
+
   TNode<BoolT> IsSequentialStringInstanceType(
       SloppyTNode<Int32T> instance_type);
   TNode<BoolT> IsUncachedExternalStringInstanceType(
@@ -2563,6 +2603,13 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
     return CallBuiltin(Builtins::kSetProperty, context, receiver, key, value);
   }
 
+  TNode<Object> SetPropertyInLiteral(TNode<Context> context,
+                                     TNode<JSObject> receiver,
+                                     TNode<Object> key, TNode<Object> value) {
+    return CallBuiltin(Builtins::kSetPropertyInLiteral, context, receiver, key,
+                       value);
+  }
+
   Node* GetMethod(Node* context, Node* object, Handle<Name> name,
                   Label* if_null_or_undefined);
 
@@ -2941,9 +2988,9 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   TNode<Object> GetSuperConstructor(SloppyTNode<Context> context,
                                     SloppyTNode<JSFunction> active_function);
 
-  TNode<Object> SpeciesConstructor(SloppyTNode<Context> context,
-                                   SloppyTNode<Object> object,
-                                   SloppyTNode<Object> default_constructor);
+  TNode<JSReceiver> SpeciesConstructor(
+      SloppyTNode<Context> context, SloppyTNode<Object> object,
+      SloppyTNode<JSReceiver> default_constructor);
 
   Node* InstanceOf(Node* object, Node* callable, Node* context);
 
@@ -3000,6 +3047,7 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   Node* IsPromiseHookEnabled();
   Node* HasAsyncEventDelegate();
   Node* IsPromiseHookEnabledOrHasAsyncEventDelegate();
+  Node* IsPromiseHookEnabledOrDebugIsActiveOrHasAsyncEventDelegate();
 
   // Helpers for StackFrame markers.
   Node* MarkerIsFrameType(Node* marker_or_function,
@@ -3126,6 +3174,8 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
 
   void InitializeFunctionContext(Node* native_context, Node* context,
                                  int slots);
+
+  TNode<JSArray> ArrayCreate(TNode<Context> context, TNode<Number> length);
 
  private:
   friend class CodeStubArguments;

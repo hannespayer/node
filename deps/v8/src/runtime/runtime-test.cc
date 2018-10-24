@@ -322,6 +322,9 @@ RUNTIME_FUNCTION(Runtime_GetOptimizationStatus) {
   HandleScope scope(isolate);
   DCHECK(args.length() == 1 || args.length() == 2);
   int status = 0;
+  if (FLAG_lite_mode) {
+    status |= static_cast<int>(OptimizationStatus::kLiteMode);
+  }
   if (!isolate->use_optimizer()) {
     status |= static_cast<int>(OptimizationStatus::kNeverOptimize);
   }
@@ -863,10 +866,13 @@ RUNTIME_FUNCTION(Runtime_GetWasmExceptionValues) {
   HandleScope scope(isolate);
   DCHECK_EQ(1, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSReceiver, exception, 0);
-  RETURN_RESULT_OR_FAILURE(
-      isolate, JSReceiver::GetProperty(
-                   isolate, exception,
-                   isolate->factory()->wasm_exception_values_symbol()));
+  Handle<Object> values_obj;
+  CHECK(JSReceiver::GetProperty(
+            isolate, exception,
+            isolate->factory()->wasm_exception_values_symbol())
+            .ToHandle(&values_obj));
+  Handle<FixedArray> values = Handle<FixedArray>::cast(values_obj);
+  return *isolate->factory()->NewJSArrayWithElements(values);
 }
 
 namespace {

@@ -61,6 +61,7 @@ class GCIdleTimeHeapState;
 class GCTracer;
 class HeapController;
 class HeapObjectAllocationTracker;
+class HeapObjectPtr;
 class HeapObjectsFilter;
 class HeapStats;
 class HistogramTimer;
@@ -82,8 +83,6 @@ class StoreBuffer;
 class StressScavengeObserver;
 class TracePossibleWrapperReporter;
 class WeakObjectRetainer;
-
-typedef void (*ObjectSlotCallback)(HeapObject** from, HeapObject* to);
 
 enum ArrayStorageAllocationMode {
   DONT_INITIALIZE_ARRAY_ELEMENTS,
@@ -395,7 +394,9 @@ class Heap {
   Object* allocation_sites_list() { return allocation_sites_list_; }
 
   // Used in CreateAllocationSiteStub and the (de)serializer.
-  Object** allocation_sites_list_address() { return &allocation_sites_list_; }
+  Address allocation_sites_list_address() {
+    return reinterpret_cast<Address>(&allocation_sites_list_);
+  }
 
   // Traverse all the allocaions_sites [nested_site and weak_next] in the list
   // and foreach call the visitor
@@ -651,7 +652,7 @@ class Heap {
   V8_INLINE RootsTable& roots_table() { return isolate_data_.roots(); }
 
 // Heap root getters.
-#define ROOT_ACCESSOR(type, name, CamelName) inline type* name();
+#define ROOT_ACCESSOR(type, name, CamelName) inline type name();
   MUTABLE_ROOT_LIST(ROOT_ACCESSOR)
 #undef ROOT_ACCESSOR
 
@@ -778,11 +779,11 @@ class Heap {
   static intptr_t store_buffer_mask_constant();
   static Address store_buffer_overflow_function_address();
 
-  void ClearRecordedSlot(HeapObject* object, Object** slot);
+  void ClearRecordedSlot(HeapObject* object, ObjectSlot slot);
   void ClearRecordedSlotRange(Address start, Address end);
 
 #ifdef DEBUG
-  void VerifyClearedSlot(HeapObject* object, Object** slot);
+  void VerifyClearedSlot(HeapObject* object, ObjectSlot slot);
 #endif
 
   // ===========================================================================
@@ -894,7 +895,7 @@ class Heap {
   inline void FinalizeExternalString(String* string);
 
   static String* UpdateNewSpaceReferenceInExternalStringTableEntry(
-      Heap* heap, Object** pointer);
+      Heap* heap, ObjectSlot pointer);
 
   // ===========================================================================
   // Methods checking/returning the space of a given object/address. ===========
@@ -904,12 +905,14 @@ class Heap {
   static inline bool InNewSpace(Object* object);
   static inline bool InNewSpace(MaybeObject* object);
   static inline bool InNewSpace(HeapObject* heap_object);
+  static inline bool InNewSpace(HeapObjectPtr heap_object);
   static inline bool InFromSpace(Object* object);
   static inline bool InFromSpace(MaybeObject* object);
   static inline bool InFromSpace(HeapObject* heap_object);
   static inline bool InToSpace(Object* object);
   static inline bool InToSpace(MaybeObject* object);
   static inline bool InToSpace(HeapObject* heap_object);
+  static inline bool InToSpace(HeapObjectPtr heap_object);
 
   // Returns whether the object resides in old space.
   inline bool InOldSpace(Object* object);
@@ -935,6 +938,11 @@ class Heap {
   // Find the heap which owns this HeapObject. Should never be called for
   // objects in RO space.
   static inline Heap* FromWritableHeapObject(const HeapObject* obj);
+  // This takes a HeapObjectPtr* (as opposed to a plain HeapObjectPtr)
+  // to keep the WRITE_BARRIER macro syntax-compatible to the HeapObject*
+  // version above.
+  // TODO(3770): This should probably take a HeapObjectPtr eventually.
+  static inline Heap* FromWritableHeapObject(const HeapObjectPtr* obj);
 
   // ===========================================================================
   // Object statistics tracking. ===============================================
@@ -1276,7 +1284,7 @@ class Heap {
   class SkipStoreBufferScope;
 
   typedef String* (*ExternalStringTableUpdaterCallback)(Heap* heap,
-                                                        Object** pointer);
+                                                        ObjectSlot pointer);
 
   // External strings table is a place where all external strings are
   // registered.  We need to keep track of such strings to properly
@@ -1391,8 +1399,7 @@ class Heap {
     return 0;
   }
 
-#define ROOT_ACCESSOR(type, name, CamelName) \
-  inline void set_##name(type* value);
+#define ROOT_ACCESSOR(type, name, CamelName) inline void set_##name(type value);
   ROOT_LIST(ROOT_ACCESSOR)
 #undef ROOT_ACCESSOR
 
@@ -2148,15 +2155,16 @@ class CodePageMemoryModificationScope {
 class VerifyPointersVisitor : public ObjectVisitor, public RootVisitor {
  public:
   explicit VerifyPointersVisitor(Heap* heap) : heap_(heap) {}
-  void VisitPointers(HeapObject* host, Object** start, Object** end) override;
-  void VisitPointers(HeapObject* host, MaybeObject** start,
-                     MaybeObject** end) override;
-  void VisitRootPointers(Root root, const char* description, Object** start,
-                         Object** end) override;
+  void VisitPointers(HeapObject* host, ObjectSlot start,
+                     ObjectSlot end) override;
+  void VisitPointers(HeapObject* host, MaybeObjectSlot start,
+                     MaybeObjectSlot end) override;
+  void VisitRootPointers(Root root, const char* description, ObjectSlot start,
+                         ObjectSlot end) override;
 
  protected:
-  virtual void VerifyPointers(HeapObject* host, MaybeObject** start,
-                              MaybeObject** end);
+  virtual void VerifyPointers(HeapObject* host, MaybeObjectSlot start,
+                              MaybeObjectSlot end);
 
   Heap* heap_;
 };
@@ -2165,8 +2173,8 @@ class VerifyPointersVisitor : public ObjectVisitor, public RootVisitor {
 // Verify that all objects are Smis.
 class VerifySmisVisitor : public RootVisitor {
  public:
-  void VisitRootPointers(Root root, const char* description, Object** start,
-                         Object** end) override;
+  void VisitRootPointers(Root root, const char* description, ObjectSlot start,
+                         ObjectSlot end) override;
 };
 
 // Space iterator for iterating over all the paged spaces of the heap: Map

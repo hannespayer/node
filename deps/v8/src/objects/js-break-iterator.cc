@@ -8,7 +8,6 @@
 
 #include "src/objects/js-break-iterator.h"
 
-#include "src/objects/intl-objects-inl.h"
 #include "src/objects/intl-objects.h"
 #include "src/objects/js-break-iterator-inl.h"
 #include "unicode/brkiter.h"
@@ -47,23 +46,14 @@ MaybeHandle<JSV8BreakIterator> JSV8BreakIterator::Initialize(
   }
 
   // Extract locale string
-  const std::vector<const char*> values = {"lookup", "best fit"};
-  std::unique_ptr<char[]> matcher_str = nullptr;
-  Intl::MatcherOption matcher = Intl::MatcherOption::kBestFit;
-  Maybe<bool> found_matcher =
-      Intl::GetStringOption(isolate, options, "localeMatcher", values,
-                            "Intl.JSV8BreakIterator", &matcher_str);
-  MAYBE_RETURN(found_matcher, MaybeHandle<JSV8BreakIterator>());
-  if (found_matcher.FromJust()) {
-    DCHECK_NOT_NULL(matcher_str.get());
-    if (strcmp(matcher_str.get(), "lookup") == 0) {
-      matcher = Intl::MatcherOption::kLookup;
-    }
-  }
-  std::set<std::string> available_locales =
-      Intl::GetAvailableLocales(ICUService::kBreakIterator);
-  Intl::ResolvedLocale r = Intl::ResolveLocale(isolate, available_locales,
-                                               requested_locales, matcher, {});
+  Maybe<Intl::MatcherOption> maybe_locale_matcher =
+      Intl::GetLocaleMatcher(isolate, options, "Intl.JSV8BreakIterator");
+  MAYBE_RETURN(maybe_locale_matcher, MaybeHandle<JSV8BreakIterator>());
+  Intl::MatcherOption matcher = maybe_locale_matcher.FromJust();
+
+  Intl::ResolvedLocale r =
+      Intl::ResolveLocale(isolate, JSV8BreakIterator::GetAvailableLocales(),
+                          requested_locales, matcher, {});
 
   // Extract type from options
   std::unique_ptr<char[]> type_str = nullptr;
@@ -167,6 +157,53 @@ Handle<String> JSV8BreakIterator::TypeAsString() const {
     case Type::COUNT:
       UNREACHABLE();
   }
+}
+
+Handle<Object> JSV8BreakIterator::Current(
+    Isolate* isolate, Handle<JSV8BreakIterator> break_iterator) {
+  return isolate->factory()->NewNumberFromInt(
+      break_iterator->break_iterator()->raw()->current());
+}
+
+Handle<Object> JSV8BreakIterator::First(
+    Isolate* isolate, Handle<JSV8BreakIterator> break_iterator) {
+  return isolate->factory()->NewNumberFromInt(
+      break_iterator->break_iterator()->raw()->first());
+}
+
+Handle<Object> JSV8BreakIterator::Next(
+    Isolate* isolate, Handle<JSV8BreakIterator> break_iterator) {
+  return isolate->factory()->NewNumberFromInt(
+      break_iterator->break_iterator()->raw()->next());
+}
+
+String* JSV8BreakIterator::BreakType(Isolate* isolate,
+                                     Handle<JSV8BreakIterator> break_iterator) {
+  int32_t status = break_iterator->break_iterator()->raw()->getRuleStatus();
+  // Keep return values in sync with JavaScript BreakType enum.
+  if (status >= UBRK_WORD_NONE && status < UBRK_WORD_NONE_LIMIT) {
+    return ReadOnlyRoots(isolate).none_string();
+  }
+  if (status >= UBRK_WORD_NUMBER && status < UBRK_WORD_NUMBER_LIMIT) {
+    return ReadOnlyRoots(isolate).number_string();
+  }
+  if (status >= UBRK_WORD_LETTER && status < UBRK_WORD_LETTER_LIMIT) {
+    return ReadOnlyRoots(isolate).letter_string();
+  }
+  if (status >= UBRK_WORD_KANA && status < UBRK_WORD_KANA_LIMIT) {
+    return ReadOnlyRoots(isolate).kana_string();
+  }
+  if (status >= UBRK_WORD_IDEO && status < UBRK_WORD_IDEO_LIMIT) {
+    return ReadOnlyRoots(isolate).ideo_string();
+  }
+  return ReadOnlyRoots(isolate).unknown_string();
+}
+
+std::set<std::string> JSV8BreakIterator::GetAvailableLocales() {
+  int32_t num_locales = 0;
+  const icu::Locale* icu_available_locales =
+      icu::BreakIterator::getAvailableLocales(num_locales);
+  return Intl::BuildLocaleSet(icu_available_locales, num_locales);
 }
 
 }  // namespace internal

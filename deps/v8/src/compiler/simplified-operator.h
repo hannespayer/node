@@ -679,6 +679,7 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
   const Operator* CheckNotTaggedHole();
   const Operator* CheckNumber(const VectorSlotPair& feedback);
   const Operator* CheckReceiver();
+  const Operator* CheckReceiverOrNullOrUndefined();
   const Operator* CheckSmi(const VectorSlotPair& feedback);
   const Operator* CheckString(const VectorSlotPair& feedback);
   const Operator* CheckSymbol();

@@ -50,7 +50,7 @@ MaybeHandle<WasmModuleObject> WasmEngine::SyncCompileTranslatedAsmJs(
   // Transfer ownership of the WasmModule to the {Managed<WasmModule>} generated
   // in {CompileToModuleObject}.
   return CompileToModuleObject(isolate, kAsmjsWasmFeatures, thrower,
-                               std::move(result.val), bytes, asm_js_script,
+                               std::move(result).value(), bytes, asm_js_script,
                                asm_js_offset_table_bytes);
 }
 
@@ -67,8 +67,9 @@ MaybeHandle<WasmModuleObject> WasmEngine::SyncCompile(
 
   // Transfer ownership of the WasmModule to the {Managed<WasmModule>} generated
   // in {CompileToModuleObject}.
-  return CompileToModuleObject(isolate, enabled, thrower, std::move(result.val),
-                               bytes, Handle<Script>(), Vector<const byte>());
+  return CompileToModuleObject(isolate, enabled, thrower,
+                               std::move(result).value(), bytes,
+                               Handle<Script>(), Vector<const byte>());
 }
 
 MaybeHandle<WasmInstanceObject> WasmEngine::SyncInstantiate(
@@ -175,11 +176,9 @@ bool WasmEngine::CompileFunction(Isolate* isolate, NativeModule* native_module,
   ErrorThrower thrower(isolate, "Manually requested tier up");
   // Note we assume that "one-off" compilations can discard detected features.
   WasmFeatures detected = kNoWasmFeatures;
-  WasmCode* ret = WasmCompilationUnit::CompileWasmFunction(
+  return WasmCompilationUnit::CompileWasmFunction(
       isolate, native_module, &detected, &thrower,
-      GetModuleEnv(native_module->compilation_state()),
       &native_module->module()->functions[function_index], tier);
-  return ret != nullptr;
 }
 
 std::shared_ptr<NativeModule> WasmEngine::ExportNativeModule(

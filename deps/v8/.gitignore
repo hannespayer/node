@@ -33,6 +33,7 @@
 .project
 .pydevproject
 .settings
+.torquelint-cache
 .vscode
 /Default/
 /_*
@@ -54,7 +55,7 @@
 /test/mozilla/data
 /test/test262/data
 /test/test262/harness
-/test/wasm-js
+/test/wasm-js/data
 /test/wasm-spec-tests/tests
 /test/wasm-spec-tests/tests.tar.gz
 /third_party/*

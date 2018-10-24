@@ -190,6 +190,7 @@ struct MachineRepresentationOf<
 template <class T>
 struct is_valid_type_tag {
   static const bool value = std::is_base_of<Object, T>::value ||
+                            std::is_base_of<ObjectPtr, T>::value ||
                             std::is_base_of<UntaggedT, T>::value ||
                             std::is_base_of<MaybeObject, T>::value ||
                             std::is_same<ExternalReference, T>::value;
@@ -314,9 +315,15 @@ typedef ZoneVector<CodeAssemblerVariable*> CodeAssemblerVariableList;
 
 typedef std::function<void()> CodeAssemblerCallback;
 
+// TODO(3770): The HeapObject/HeapObjectPtr dance is temporary (while the
+// incremental transition is in progress, we want to pretend that subclasses
+// of HeapObjectPtr are also subclasses of Object/HeapObject); it can be
+// removed when the migration is complete.
 template <class T, class U>
 struct is_subtype {
-  static const bool value = std::is_base_of<U, T>::value;
+  static const bool value = std::is_base_of<U, T>::value ||
+                            (std::is_base_of<U, HeapObject>::value &&
+                             std::is_base_of<HeapObjectPtr, T>::value);
 };
 template <class T1, class T2, class U>
 struct is_subtype<UnionT<T1, T2>, U> {
@@ -395,6 +402,7 @@ struct types_have_common_values<MaybeObject, T> {
 // TNode<T> is an SSA value with the static type tag T, which is one of the
 // following:
 //   - a subclass of internal::Object represents a tagged type
+//   - a subclass of internal::ObjectPtr represents a tagged type
 //   - a subclass of internal::UntaggedT represents an untagged type
 //   - ExternalReference
 //   - PairT<T1, T2> for an operation returning two values, with types T1
@@ -630,7 +638,8 @@ class V8_EXPORT_PRIVATE CodeAssembler {
 
       static_assert(types_have_common_values<A, PreviousType>::value,
                     "Incompatible types: this cast can never succeed.");
-      static_assert(std::is_convertible<TNode<A>, TNode<Object>>::value,
+      static_assert(std::is_convertible<TNode<A>, TNode<Object>>::value ||
+                        std::is_convertible<TNode<A>, TNode<ObjectPtr>>::value,
                     "Coercion to untagged values cannot be "
                     "checked.");
       static_assert(
@@ -884,6 +893,10 @@ class V8_EXPORT_PRIVATE CodeAssembler {
     return UncheckedCast<IntPtrT>(
         WordShr(static_cast<Node*>(left), static_cast<Node*>(right)));
   }
+  TNode<IntPtrT> WordSar(TNode<IntPtrT> left, TNode<IntegralT> right) {
+    return UncheckedCast<IntPtrT>(
+        WordSar(static_cast<Node*>(left), static_cast<Node*>(right)));
+  }
 
   TNode<IntPtrT> WordAnd(TNode<IntPtrT> left, TNode<IntPtrT> right) {
     return UncheckedCast<IntPtrT>(
@@ -946,6 +959,7 @@ class V8_EXPORT_PRIVATE CodeAssembler {
   }
 
   TNode<WordT> IntPtrAdd(SloppyTNode<WordT> left, SloppyTNode<WordT> right);
+  TNode<IntPtrT> IntPtrDiv(TNode<IntPtrT> left, TNode<IntPtrT> right);
   TNode<WordT> IntPtrSub(SloppyTNode<WordT> left, SloppyTNode<WordT> right);
   TNode<WordT> IntPtrMul(SloppyTNode<WordT> left, SloppyTNode<WordT> right);
   TNode<IntPtrT> IntPtrAdd(TNode<IntPtrT> left, TNode<IntPtrT> right) {
@@ -974,6 +988,9 @@ class V8_EXPORT_PRIVATE CodeAssembler {
   TNode<WordT> WordSar(SloppyTNode<WordT> value, int shift);
   TNode<IntPtrT> WordShr(TNode<IntPtrT> value, int shift) {
     return UncheckedCast<IntPtrT>(WordShr(static_cast<Node*>(value), shift));
+  }
+  TNode<IntPtrT> WordSar(TNode<IntPtrT> value, int shift) {
+    return UncheckedCast<IntPtrT>(WordSar(static_cast<Node*>(value), shift));
   }
   TNode<Word32T> Word32Shr(SloppyTNode<Word32T> value, int shift);
 

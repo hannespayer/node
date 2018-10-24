@@ -11,6 +11,7 @@
 #include "src/objects/js-array-buffer-inl.h"
 #include "src/objects/js-array-inl.h"
 #include "src/objects/map.h"
+#include "src/objects/slots.h"
 #include "src/snapshot/builtin-serializer-allocator.h"
 #include "src/snapshot/natives.h"
 #include "src/snapshot/snapshot.h"
@@ -110,11 +111,12 @@ bool Serializer<AllocatorT>::MustBeDeferred(HeapObject* object) {
 template <class AllocatorT>
 void Serializer<AllocatorT>::VisitRootPointers(Root root,
                                                const char* description,
-                                               Object** start, Object** end) {
+                                               ObjectSlot start,
+                                               ObjectSlot end) {
   // Builtins are serialized in a separate pass by the BuiltinSerializer.
   if (root == Root::kBuiltins || root == Root::kDispatchTable) return;
 
-  for (Object** current = start; current < end; current++) {
+  for (ObjectSlot current = start; current < end; ++current) {
     SerializeRootObject(*current);
   }
 }
@@ -731,22 +733,21 @@ void Serializer<AllocatorT>::ObjectSerializer::SerializeContent(Map* map,
 
 template <class AllocatorT>
 void Serializer<AllocatorT>::ObjectSerializer::VisitPointers(HeapObject* host,
-                                                             Object** start,
-                                                             Object** end) {
-  VisitPointers(host, reinterpret_cast<MaybeObject**>(start),
-                reinterpret_cast<MaybeObject**>(end));
+                                                             ObjectSlot start,
+                                                             ObjectSlot end) {
+  VisitPointers(host, MaybeObjectSlot(start), MaybeObjectSlot(end));
 }
 
 template <class AllocatorT>
 void Serializer<AllocatorT>::ObjectSerializer::VisitPointers(
-    HeapObject* host, MaybeObject** start, MaybeObject** end) {
-  MaybeObject** current = start;
+    HeapObject* host, MaybeObjectSlot start, MaybeObjectSlot end) {
+  MaybeObjectSlot current = start;
   while (current < end) {
     while (current < end && ((*current)->IsSmi() || (*current)->IsCleared())) {
-      current++;
+      ++current;
     }
     if (current < end) {
-      OutputRawData(reinterpret_cast<Address>(current));
+      OutputRawData(current.address());
     }
     HeapObject* current_contents;
     HeapObjectReferenceType reference_type;
@@ -759,12 +760,12 @@ void Serializer<AllocatorT>::ObjectSerializer::VisitPointers(
           serializer_->root_index_map()->Lookup(current_contents,
                                                 &root_index) &&
           RootsTable::IsImmortalImmovable(root_index) &&
-          *current == current[-1]) {
+          *current == *(current - 1)) {
         DCHECK_EQ(reference_type, HeapObjectReferenceType::STRONG);
         DCHECK(!Heap::InNewSpace(current_contents));
         int repeat_count = 1;
-        while (&current[repeat_count] < end - 1 &&
-               current[repeat_count] == *current) {
+        while (current + repeat_count < end - 1 &&
+               *(current + repeat_count) == *current) {
           repeat_count++;
         }
         current += repeat_count;
@@ -782,7 +783,7 @@ void Serializer<AllocatorT>::ObjectSerializer::VisitPointers(
         serializer_->SerializeObject(current_contents, kPlain, kStartOfObject,
                                      0);
         bytes_processed_so_far_ += kPointerSize;
-        current++;
+        ++current;
       }
     }
   }

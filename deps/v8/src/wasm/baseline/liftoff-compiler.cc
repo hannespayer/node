@@ -147,8 +147,8 @@ class LiftoffCompiler {
     }
   };
 
-  LiftoffCompiler(compiler::CallDescriptor* call_descriptor, ModuleEnv* env,
-                  Zone* compilation_zone)
+  LiftoffCompiler(compiler::CallDescriptor* call_descriptor,
+                  CompilationEnv* env, Zone* compilation_zone)
       : descriptor_(
             GetLoweredCallDescriptor(compilation_zone, call_descriptor)),
         env_(env),
@@ -1836,7 +1836,7 @@ class LiftoffCompiler {
  private:
   LiftoffAssembler asm_;
   compiler::CallDescriptor* const descriptor_;
-  ModuleEnv* const env_;
+  CompilationEnv* const env_;
   bool ok_ = true;
   std::vector<OutOfLineCode> out_of_line_code_;
   SourcePositionTableBuilder source_position_table_builder_;
@@ -1872,7 +1872,8 @@ class LiftoffCompiler {
 
 }  // namespace
 
-bool LiftoffCompilationUnit::ExecuteCompilation(WasmFeatures* detected) {
+bool LiftoffCompilationUnit::ExecuteCompilation(CompilationEnv* env,
+                                                WasmFeatures* detected) {
   TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.wasm"),
                "ExecuteLiftoffCompilation");
   base::ElapsedTimer compile_timer;
@@ -1881,15 +1882,14 @@ bool LiftoffCompilationUnit::ExecuteCompilation(WasmFeatures* detected) {
   }
 
   Zone zone(wasm_unit_->wasm_engine_->allocator(), "LiftoffCompilationZone");
-  const WasmModule* module =
-      wasm_unit_->env_ ? wasm_unit_->env_->module : nullptr;
+  const WasmModule* module = env ? env->module : nullptr;
   auto call_descriptor =
       compiler::GetWasmCallDescriptor(&zone, wasm_unit_->func_body_.sig);
   base::Optional<TimedHistogramScope> liftoff_compile_time_scope(
       base::in_place, wasm_unit_->counters_->liftoff_compile_time());
   WasmFullDecoder<Decoder::kValidate, LiftoffCompiler> decoder(
       &zone, module, wasm_unit_->native_module_->enabled_features(), detected,
-      wasm_unit_->func_body_, call_descriptor, wasm_unit_->env_, &zone);
+      wasm_unit_->func_body_, call_descriptor, env, &zone);
   decoder.Decode();
   liftoff_compile_time_scope.reset();
   LiftoffCompiler* compiler = &decoder.interface();
@@ -1920,17 +1920,13 @@ bool LiftoffCompilationUnit::ExecuteCompilation(WasmFeatures* detected) {
   uint32_t frame_slot_count = compiler->GetTotalFrameSlotCount();
   int safepoint_table_offset = compiler->GetSafepointTableOffset();
 
-  code_ = wasm_unit_->native_module_->AddCode(
+  WasmCode* code = wasm_unit_->native_module_->AddCode(
       wasm_unit_->func_index_, desc, frame_slot_count, safepoint_table_offset,
       0, std::move(protected_instructions), std::move(source_positions),
       WasmCode::kLiftoff);
-  wasm_unit_->native_module_->PublishCode(code_);
+  wasm_unit_->SetResult(code);
 
   return true;
-}
-
-WasmCode* LiftoffCompilationUnit::FinishCompilation(ErrorThrower*) {
-  return code_;
 }
 
 #undef __

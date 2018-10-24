@@ -331,8 +331,7 @@ Handle<T> Factory::NewWeakFixedArrayWithMap(RootIndex map_root_index,
 
   Handle<WeakFixedArray> array(WeakFixedArray::cast(result), isolate());
   array->set_length(length);
-  MemsetPointer(array->data_start(),
-                HeapObjectReference::Strong(*undefined_value()), length);
+  MemsetPointer(ObjectSlot(array->data_start()), *undefined_value(), length);
 
   return Handle<T>::cast(array);
 }
@@ -361,8 +360,7 @@ Handle<WeakFixedArray> Factory::NewWeakFixedArray(int length,
   result->set_map_after_allocation(*weak_fixed_array_map(), SKIP_WRITE_BARRIER);
   Handle<WeakFixedArray> array(WeakFixedArray::cast(result), isolate());
   array->set_length(length);
-  MemsetPointer(array->data_start(),
-                HeapObjectReference::Strong(*undefined_value()), length);
+  MemsetPointer(ObjectSlot(array->data_start()), *undefined_value(), length);
   return array;
 }
 
@@ -427,8 +425,7 @@ Handle<FeedbackVector> Factory::NewFeedbackVector(
   vector->set_profiler_ticks(0);
   vector->set_deopt_count(0);
   // TODO(leszeks): Initialize based on the feedback metadata.
-  MemsetPointer(vector->slots_start(),
-                MaybeObject::FromObject(*undefined_value()), length);
+  MemsetPointer(ObjectSlot(vector->slots_start()), *undefined_value(), length);
   return vector;
 }
 
@@ -1937,7 +1934,7 @@ Handle<JSObject> Factory::CopyJSObjectWithAllocationSite(
 
   // Update properties if necessary.
   if (source->HasFastProperties()) {
-    PropertyArray* properties = source->property_array();
+    PropertyArray properties = source->property_array();
     if (properties->length() > 0) {
       // TODO(gsathya): Do not copy hash code.
       Handle<PropertyArray> prop = CopyArrayWithMap(
@@ -1955,12 +1952,12 @@ Handle<JSObject> Factory::CopyJSObjectWithAllocationSite(
 
 namespace {
 template <typename T>
-void initialize_length(T* array, int length) {
+void initialize_length(Handle<T> array, int length) {
   array->set_length(length);
 }
 
 template <>
-void initialize_length<PropertyArray>(PropertyArray* array, int length) {
+void initialize_length<PropertyArray>(Handle<PropertyArray> array, int length) {
   array->initialize_length(length);
 }
 
@@ -1972,7 +1969,7 @@ Handle<T> Factory::CopyArrayWithMap(Handle<T> src, Handle<Map> map) {
   HeapObject* obj = AllocateRawFixedArray(len, NOT_TENURED);
   obj->set_map_after_allocation(*map, SKIP_WRITE_BARRIER);
 
-  T* result = T::cast(obj);
+  Handle<T> result(T::cast(obj), isolate());
   DisallowHeapAllocation no_gc;
   WriteBarrierMode mode = result->GetWriteBarrierMode(no_gc);
 
@@ -1986,7 +1983,7 @@ Handle<T> Factory::CopyArrayWithMap(Handle<T> src, Handle<Map> map) {
     initialize_length(result, len);
     for (int i = 0; i < len; i++) result->set(i, src->get(i), mode);
   }
-  return Handle<T>(result, isolate());
+  return result;
 }
 
 template <typename T>
@@ -1999,7 +1996,7 @@ Handle<T> Factory::CopyArrayAndGrow(Handle<T> src, int grow_by,
   HeapObject* obj = AllocateRawFixedArray(new_len, pretenure);
   obj->set_map_after_allocation(src->map(), SKIP_WRITE_BARRIER);
 
-  T* result = T::cast(obj);
+  Handle<T> result(T::cast(obj), isolate());
   initialize_length(result, new_len);
 
   // Copy the content.
@@ -2007,7 +2004,7 @@ Handle<T> Factory::CopyArrayAndGrow(Handle<T> src, int grow_by,
   WriteBarrierMode mode = obj->GetWriteBarrierMode(no_gc);
   for (int i = 0; i < old_len; i++) result->set(i, src->get(i), mode);
   MemsetPointer(result->data_start() + old_len, *undefined_value(), grow_by);
-  return Handle<T>(result, isolate());
+  return result;
 }
 
 Handle<FixedArray> Factory::CopyFixedArrayWithMap(Handle<FixedArray> array,
@@ -2039,9 +2036,8 @@ Handle<WeakFixedArray> Factory::CopyWeakFixedArrayAndGrow(
   DisallowHeapAllocation no_gc;
   WriteBarrierMode mode = obj->GetWriteBarrierMode(no_gc);
   for (int i = 0; i < old_len; i++) result->Set(i, src->Get(i), mode);
-  HeapObjectReference* undefined_reference =
-      HeapObjectReference::Strong(ReadOnlyRoots(isolate()).undefined_value());
-  MemsetPointer(result->data_start() + old_len, undefined_reference, grow_by);
+  MemsetPointer(ObjectSlot(result->RawFieldOfElementAt(old_len)),
+                ReadOnlyRoots(isolate()).undefined_value(), grow_by);
   return Handle<WeakFixedArray>(result, isolate());
 }
 
@@ -2061,10 +2057,8 @@ Handle<WeakArrayList> Factory::CopyWeakArrayListAndGrow(
   DisallowHeapAllocation no_gc;
   WriteBarrierMode mode = obj->GetWriteBarrierMode(no_gc);
   for (int i = 0; i < old_capacity; i++) result->Set(i, src->Get(i), mode);
-  HeapObjectReference* undefined_reference =
-      HeapObjectReference::Strong(ReadOnlyRoots(isolate()).undefined_value());
-  MemsetPointer(result->data_start() + old_capacity, undefined_reference,
-                grow_by);
+  MemsetPointer(ObjectSlot(result->data_start() + old_capacity),
+                ReadOnlyRoots(isolate()).undefined_value(), grow_by);
   return Handle<WeakArrayList>(result, isolate());
 }
 
@@ -2708,6 +2702,21 @@ Handle<Code> Factory::NewOffHeapTrampolineFor(Handle<Code> code,
   if (code->has_safepoint_info()) {
     result->set_safepoint_table_offset(code->safepoint_table_offset());
   }
+
+  // Replace the newly generated trampoline's RelocInfo ByteArray with the
+  // canonical one stored in the roots to avoid duplicating it for every single
+  // builtin.
+  ByteArray* canonical_reloc_info =
+      ReadOnlyRoots(isolate()).off_heap_trampoline_relocation_info();
+#ifdef DEBUG
+  // Verify that the contents are the same.
+  ByteArray* reloc_info = result->relocation_info();
+  DCHECK_EQ(reloc_info->length(), canonical_reloc_info->length());
+  for (int i = 0; i < reloc_info->length(); ++i) {
+    DCHECK_EQ(reloc_info->get(i), canonical_reloc_info->get(i));
+  }
+#endif
+  result->set_relocation_info(canonical_reloc_info);
 
   return result;
 }

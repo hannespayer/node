@@ -653,6 +653,7 @@ class KeyAccumulator;
 class LayoutDescriptor;
 class LookupIterator;
 class FieldType;
+class MaybeObjectSlot;
 class MicrotaskQueue;
 class Module;
 class ModuleInfoEntry;
@@ -1065,6 +1066,10 @@ class Object {
   // Type testing.
   bool IsObject() const { return true; }
 
+  // Syntax compatibility with ObjectPtr, so the same macros can consume
+  // arguments of either type.
+  Address ptr() const { return reinterpret_cast<Address>(this); }
+
 #define IS_TYPE_FUNCTION_DECL(Type) V8_INLINE bool Is##Type() const;
   OBJECT_TYPE_LIST(IS_TYPE_FUNCTION_DECL)
   HEAP_OBJECT_TYPE_LIST(IS_TYPE_FUNCTION_DECL)
@@ -1382,7 +1387,7 @@ class Object {
   // Tries to convert an object to an array index. Returns true and sets the
   // output parameter if it succeeds. Equivalent to ToArrayLength, but does not
   // allow kMaxUInt32.
-  inline bool ToArrayIndex(uint32_t* index) const;
+  V8_WARN_UNUSED_RESULT inline bool ToArrayIndex(uint32_t* index) const;
 
   // Returns true if the result of iterating over the object is the same
   // (including observable effects) as simply accessing the properties between 0
@@ -1604,7 +1609,7 @@ class HeapObject: public Object {
   inline Map* map() const;
   inline void set_map(Map* value);
 
-  inline HeapObject** map_slot();
+  inline ObjectSlot map_slot();
 
   // The no-write-barrier version.  This is OK if the object is white and in
   // new space, or if the value is an immortal immutable object, like the maps
@@ -1710,8 +1715,10 @@ class HeapObject: public Object {
   // Does no checking, and is safe to use during GC, while maps are invalid.
   // Does not invoke write barrier, so should only be assigned to
   // during marking GC.
-  static inline Object** RawField(const HeapObject* obj, int offset);
-  static inline MaybeObject** RawMaybeWeakField(HeapObject* obj, int offset);
+  inline ObjectSlot RawField(int byte_offset) const;
+  static inline ObjectSlot RawField(const HeapObject* obj, int offset);
+  inline MaybeObjectSlot RawMaybeWeakField(int byte_offset) const;
+  static inline MaybeObjectSlot RawMaybeWeakField(HeapObject* obj, int offset);
 
   DECL_CAST(HeapObject)
 

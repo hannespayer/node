@@ -50,6 +50,7 @@
 #include "src/objects/js-array-inl.h"
 #include "src/objects/js-collection-inl.h"
 #include "src/objects/managed.h"
+#include "src/objects/slots.h"
 #include "src/regexp/jsregexp.h"
 #include "src/snapshot/snapshot.h"
 #include "src/transitions.h"
@@ -2963,8 +2964,10 @@ TEST(ReleaseOverReservedPages) {
   if (FLAG_never_compact) return;
   FLAG_trace_gc = true;
   // The optimizer can allocate stuff, messing up the test.
+#ifndef V8_LITE_MODE
   FLAG_opt = false;
   FLAG_always_opt = false;
+#endif  // V8_LITE_MODE
   // - Parallel compaction increases fragmentation, depending on how existing
   //   memory is distributed. Since this is non-deterministic because of
   //   concurrent sweeping, we disable it for this test.
@@ -3305,7 +3308,10 @@ UNINITIALIZED_TEST(ReleaseStackTraceData) {
     // See: https://codereview.chromium.org/181833004/
     return;
   }
-  FLAG_use_ic = false;  // ICs retain objects.
+#ifndef V8_LITE_MODE
+  // ICs retain objects.
+  FLAG_use_ic = false;
+#endif  // V8_LITE_MODE
   FLAG_concurrent_recompilation = false;
   v8::Isolate::CreateParams create_params;
   create_params.array_buffer_allocator = CcTest::array_buffer_allocator();
@@ -3359,7 +3365,9 @@ UNINITIALIZED_TEST(ReleaseStackTraceData) {
 
 TEST(Regress169928) {
   FLAG_allow_natives_syntax = true;
+#ifndef V8_LITE_MODE
   FLAG_opt = false;
+#endif  // V8_LITE_MODE
   CcTest::InitializeVM();
   Isolate* isolate = CcTest::i_isolate();
   LocalContext env;
@@ -3485,8 +3493,8 @@ TEST(LargeObjectSlotRecording) {
 
 class DummyVisitor : public RootVisitor {
  public:
-  void VisitRootPointers(Root root, const char* description, Object** start,
-                         Object** end) override {}
+  void VisitRootPointers(Root root, const char* description, ObjectSlot start,
+                         ObjectSlot end) override {}
 };
 
 
@@ -4590,7 +4598,8 @@ TEST(Regress388880) {
   // Allocate padding objects in old pointer space so, that object allocated
   // afterwards would end at the end of the page.
   heap::SimulateFullSpace(heap->old_space());
-  size_t padding_size = desired_offset - Page::kObjectStartOffset;
+  size_t padding_size =
+      desired_offset - MemoryChunkLayout::ObjectStartOffsetInDataPage();
   heap::CreatePadding(heap, static_cast<int>(padding_size), TENURED);
 
   Handle<JSObject> o = factory->NewJSObjectFromMap(map1, TENURED);
@@ -5744,8 +5753,8 @@ TEST(RememberedSetRemoveRange) {
   }
 
   RememberedSet<OLD_TO_NEW>::Iterate(chunk,
-                                     [&slots](Address addr) {
-                                       CHECK(slots[addr]);
+                                     [&slots](MaybeObjectSlot slot) {
+                                       CHECK(slots[slot.address()]);
                                        return KEEP_SLOT;
                                      },
                                      SlotSet::PREFREE_EMPTY_BUCKETS);
@@ -5754,8 +5763,8 @@ TEST(RememberedSetRemoveRange) {
                                          SlotSet::FREE_EMPTY_BUCKETS);
   slots[start] = false;
   RememberedSet<OLD_TO_NEW>::Iterate(chunk,
-                                     [&slots](Address addr) {
-                                       CHECK(slots[addr]);
+                                     [&slots](MaybeObjectSlot slot) {
+                                       CHECK(slots[slot.address()]);
                                        return KEEP_SLOT;
                                      },
                                      SlotSet::PREFREE_EMPTY_BUCKETS);
@@ -5766,8 +5775,8 @@ TEST(RememberedSetRemoveRange) {
   slots[start + kPointerSize] = false;
   slots[start + Page::kPageSize - kPointerSize] = false;
   RememberedSet<OLD_TO_NEW>::Iterate(chunk,
-                                     [&slots](Address addr) {
-                                       CHECK(slots[addr]);
+                                     [&slots](MaybeObjectSlot slot) {
+                                       CHECK(slots[slot.address()]);
                                        return KEEP_SLOT;
                                      },
                                      SlotSet::PREFREE_EMPTY_BUCKETS);
@@ -5777,8 +5786,8 @@ TEST(RememberedSetRemoveRange) {
                                          SlotSet::FREE_EMPTY_BUCKETS);
   slots[start + Page::kPageSize] = false;
   RememberedSet<OLD_TO_NEW>::Iterate(chunk,
-                                     [&slots](Address addr) {
-                                       CHECK(slots[addr]);
+                                     [&slots](MaybeObjectSlot slot) {
+                                       CHECK(slots[slot.address()]);
                                        return KEEP_SLOT;
                                      },
                                      SlotSet::PREFREE_EMPTY_BUCKETS);
@@ -5788,8 +5797,8 @@ TEST(RememberedSetRemoveRange) {
       SlotSet::FREE_EMPTY_BUCKETS);
   slots[chunk->area_end() - kPointerSize] = false;
   RememberedSet<OLD_TO_NEW>::Iterate(chunk,
-                                     [&slots](Address addr) {
-                                       CHECK(slots[addr]);
+                                     [&slots](MaybeObjectSlot slot) {
+                                       CHECK(slots[slot.address()]);
                                        return KEEP_SLOT;
                                      },
                                      SlotSet::PREFREE_EMPTY_BUCKETS);
@@ -6125,7 +6134,8 @@ size_t NearHeapLimitCallback(void* raw_state, size_t current_heap_limit,
 
 size_t MemoryAllocatorSizeFromHeapCapacity(size_t capacity) {
   // Size to capacity factor.
-  double factor = Page::kPageSize * 1.0 / Page::kAllocatableMemory;
+  double factor =
+      Page::kPageSize * 1.0 / MemoryChunkLayout::AllocatableMemoryInDataPage();
   // Some tables (e.g. deoptimization table) are allocated directly with the
   // memory allocator. Allow some slack to account for them.
   size_t slack = 5 * MB;

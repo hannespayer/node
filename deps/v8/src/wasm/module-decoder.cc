@@ -550,6 +550,7 @@ class ModuleDecoderImpl : public Decoder {
           }
           import->index = static_cast<uint32_t>(module_->exceptions.size());
           WasmExceptionSig* exception_sig = nullptr;
+          consume_exception_attribute();  // Attribute ignored for now.
           consume_exception_sig_index(module_.get(), &exception_sig);
           module_->exceptions.emplace_back(exception_sig);
           break;
@@ -894,6 +895,7 @@ class ModuleDecoderImpl : public Decoder {
       TRACE("DecodeException[%d] module+%d\n", i,
             static_cast<int>(pc_ - start_));
       WasmExceptionSig* exception_sig = nullptr;
+      consume_exception_attribute();  // Attribute ignored for now.
       consume_exception_sig_index(module_.get(), &exception_sig);
       module_->exceptions.emplace_back(exception_sig);
     }
@@ -904,9 +906,9 @@ class ModuleDecoderImpl : public Decoder {
       CalculateGlobalOffsets(module_.get());
     }
     ModuleResult result = toResult(std::move(module_));
-    if (verify_functions && result.ok()) {
+    if (verify_functions && result.ok() && intermediate_result_.failed()) {
       // Copy error code and location.
-      result.MoveErrorFrom(intermediate_result_);
+      result = ModuleResult::ErrorFrom(std::move(intermediate_result_));
     }
     return result;
   }
@@ -961,10 +963,11 @@ class ModuleDecoderImpl : public Decoder {
       VerifyFunctionBody(zone->allocator(), 0, wire_bytes, module,
                          function.get());
 
-    FunctionResult result(std::move(function));
-    // Copy error code and location.
-    result.MoveErrorFrom(intermediate_result_);
-    return result;
+    if (intermediate_result_.failed()) {
+      return FunctionResult::ErrorFrom(std::move(intermediate_result_));
+    }
+
+    return FunctionResult(std::move(function));
   }
 
   // Decodes a single function signature at {start}.
@@ -1008,7 +1011,7 @@ class ModuleDecoderImpl : public Decoder {
                         sizeof(ModuleDecoderImpl::seen_unordered_sections_) >
                     kLastKnownModuleSection,
                 "not enough bits");
-  Result<bool> intermediate_result_;
+  VoidResult intermediate_result_;
   ModuleOrigin origin_;
 
   uint32_t off(const byte* ptr) {
@@ -1126,16 +1129,14 @@ class ModuleDecoderImpl : public Decoder {
                               &unused_detected_features, body);
     }
 
-    if (result.failed()) {
+    // If the decode failed and this is the first error, set error code and
+    // location.
+    if (result.failed() && intermediate_result_.ok()) {
       // Wrap the error message from the function decoder.
-      std::ostringstream wrapped;
-      wrapped << "in function " << func_name << ": " << result.error_msg();
-      result.error(result.error_offset(), wrapped.str());
-
-      // Set error code and location, if this is the first error.
-      if (intermediate_result_.ok()) {
-        intermediate_result_.MoveErrorFrom(result);
-      }
+      std::ostringstream error_msg;
+      error_msg << "in function " << func_name << ": " << result.error_msg();
+      intermediate_result_ =
+          VoidResult::Error(result.error_offset(), error_msg.str());
     }
   }
 
@@ -1432,12 +1433,11 @@ class ModuleDecoderImpl : public Decoder {
       params.push_back(param);
     }
     std::vector<ValueType> returns;
-    uint32_t return_count = 0;
     // parse return types
     const size_t max_return_count = enabled_features_.mv
                                         ? kV8MaxWasmFunctionMultiReturns
                                         : kV8MaxWasmFunctionReturns;
-    return_count = consume_count("return count", max_return_count);
+    uint32_t return_count = consume_count("return count", max_return_count);
     if (failed()) return nullptr;
     for (uint32_t i = 0; ok() && i < return_count; ++i) {
       ValueType ret = consume_value_type();
@@ -1454,6 +1454,17 @@ class ModuleDecoderImpl : public Decoder {
 
     return new (zone) FunctionSig(return_count, param_count, buffer);
   }
+
+  // Consume the attribute field of an exception.
+  uint32_t consume_exception_attribute() {
+    const byte* pos = pc_;
+    uint32_t attribute = consume_u32v("exception attribute");
+    if (attribute != kExceptionAttribute) {
+      errorf(pos, "exception attribute %u not supported", attribute);
+      return 0;
+    }
+    return attribute;
+  }
 };
 
 ModuleResult DecodeWasmModule(const WasmFeatures& enabled,
@@ -1465,9 +1476,11 @@ ModuleResult DecodeWasmModule(const WasmFeatures& enabled,
       SELECT_WASM_COUNTER(counters, origin, wasm_decode, module_time);
   TimedHistogramScope wasm_decode_module_time_scope(counter);
   size_t size = module_end - module_start;
-  if (module_start > module_end) return ModuleResult::Error("start > end");
-  if (size >= kV8MaxWasmModuleSize)
-    return ModuleResult::Error("size > maximum module size: %zu", size);
+  CHECK_LE(module_start, module_end);
+  if (size >= kV8MaxWasmModuleSize) {
+    return ModuleResult::Error(0, "size > maximum module size (%zu): %zu",
+                               kV8MaxWasmModuleSize, size);
+  }
   // TODO(bradnelson): Improve histogram handling of size_t.
   auto size_counter =
       SELECT_WASM_COUNTER(counters, origin, wasm, module_size_bytes);
@@ -1485,7 +1498,7 @@ ModuleResult DecodeWasmModule(const WasmFeatures& enabled,
     auto peak_counter = SELECT_WASM_COUNTER(counters, origin, wasm_decode,
                                             module_peak_memory_bytes);
     peak_counter->AddSample(
-        static_cast<int>(result.val->signature_zone->allocation_size()));
+        static_cast<int>(result.value()->signature_zone->allocation_size()));
   }
   return result;
 }
@@ -1579,14 +1592,15 @@ FunctionResult DecodeWasmFunctionForTesting(
     const WasmModule* module, const byte* function_start,
     const byte* function_end, Counters* counters) {
   size_t size = function_end - function_start;
-  if (function_start > function_end)
-    return FunctionResult::Error("start > end");
+  CHECK_LE(function_start, function_end);
   auto size_histogram = SELECT_WASM_COUNTER(counters, module->origin, wasm,
                                             function_size_bytes);
   // TODO(bradnelson): Improve histogram handling of ptrdiff_t.
   size_histogram->AddSample(static_cast<int>(size));
-  if (size > kV8MaxWasmFunctionSize)
-    return FunctionResult::Error("size > maximum function size: %zu", size);
+  if (size > kV8MaxWasmFunctionSize) {
+    return FunctionResult::Error(0, "size > maximum function size (%zu): %zu",
+                                 kV8MaxWasmFunctionSize, size);
+  }
   ModuleDecoderImpl decoder(enabled, function_start, function_end, kWasmOrigin);
   decoder.SetCounters(counters);
   return decoder.DecodeSingleFunction(zone, wire_bytes, module,

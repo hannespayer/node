@@ -133,6 +133,67 @@ TEST_F(RedundancyEliminationTest, CheckNumberSubsumedByCheckSmi) {
 }
 
 // -----------------------------------------------------------------------------
+// CheckReceiver
+
+TEST_F(RedundancyEliminationTest, CheckReceiver) {
+  Node* value = Parameter(0);
+  Node* effect = graph()->start();
+  Node* control = graph()->start();
+
+  Node* check1 = effect =
+      graph()->NewNode(simplified()->CheckReceiver(), value, effect, control);
+  Reduction r1 = Reduce(check1);
+  ASSERT_TRUE(r1.Changed());
+  EXPECT_EQ(r1.replacement(), check1);
+
+  Node* check2 = effect =
+      graph()->NewNode(simplified()->CheckReceiver(), value, effect, control);
+  Reduction r2 = Reduce(check2);
+  ASSERT_TRUE(r2.Changed());
+  EXPECT_EQ(r2.replacement(), check1);
+}
+
+// -----------------------------------------------------------------------------
+// CheckReceiverOrNullOrUndefined
+
+TEST_F(RedundancyEliminationTest, CheckReceiverOrNullOrUndefined) {
+  Node* value = Parameter(0);
+  Node* effect = graph()->start();
+  Node* control = graph()->start();
+
+  Node* check1 = effect = graph()->NewNode(
+      simplified()->CheckReceiverOrNullOrUndefined(), value, effect, control);
+  Reduction r1 = Reduce(check1);
+  ASSERT_TRUE(r1.Changed());
+  EXPECT_EQ(r1.replacement(), check1);
+
+  Node* check2 = effect = graph()->NewNode(
+      simplified()->CheckReceiverOrNullOrUndefined(), value, effect, control);
+  Reduction r2 = Reduce(check2);
+  ASSERT_TRUE(r2.Changed());
+  EXPECT_EQ(r2.replacement(), check1);
+}
+
+TEST_F(RedundancyEliminationTest,
+       CheckReceiverOrNullOrUndefinedSubsumedByCheckReceiver) {
+  Node* value = Parameter(0);
+  Node* effect = graph()->start();
+  Node* control = graph()->start();
+
+  Node* check1 = effect =
+      graph()->NewNode(simplified()->CheckReceiver(), value, effect, control);
+  Reduction r1 = Reduce(check1);
+  ASSERT_TRUE(r1.Changed());
+  EXPECT_EQ(r1.replacement(), check1);
+
+  Node* check2 = effect = graph()->NewNode(
+      simplified()->CheckReceiverOrNullOrUndefined(), value, effect, control);
+  Reduction r2 = Reduce(check2);
+  ASSERT_TRUE(r2.Changed());
+  EXPECT_EQ(r2.replacement(), check1);
+}
+
+// -----------------------------------------------------------------------------
 // CheckString
 
 TEST_F(RedundancyEliminationTest,

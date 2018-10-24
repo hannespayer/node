@@ -177,7 +177,7 @@ void FeedbackVector::set(int index, Object* value, WriteBarrierMode mode) {
   set(index, MaybeObject::FromObject(value), mode);
 }
 
-inline MaybeObject** FeedbackVector::slots_start() {
+inline MaybeObjectSlot FeedbackVector::slots_start() {
   return HeapObject::RawMaybeWeakField(this, kFeedbackSlotsOffset);
 }
 
@@ -225,6 +225,8 @@ CompareOperationHint CompareOperationHintFromFeedback(int type_feedback) {
       return CompareOperationHint::kBigInt;
     case CompareOperationFeedback::kReceiver:
       return CompareOperationHint::kReceiver;
+    case CompareOperationFeedback::kReceiverOrNullOrUndefined:
+      return CompareOperationHint::kReceiverOrNullOrUndefined;
     default:
       return CompareOperationHint::kAny;
   }

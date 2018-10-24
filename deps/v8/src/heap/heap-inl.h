@@ -55,15 +55,17 @@ HeapObject* AllocationResult::ToObjectChecked() {
   return HeapObject::cast(object_);
 }
 
-#define ROOT_ACCESSOR(type, name, CamelName)                   \
-  type* Heap::name() {                                         \
-    return type::cast(roots_table()[RootIndex::k##CamelName]); \
+// TODO(jkummerow): Drop std::remove_pointer after the migration to ObjectPtr.
+#define ROOT_ACCESSOR(Type, name, CamelName)      \
+  Type Heap::name() {                             \
+    return std::remove_pointer<Type>::type::cast( \
+        roots_table()[RootIndex::k##CamelName]);  \
   }
 MUTABLE_ROOT_LIST(ROOT_ACCESSOR)
 #undef ROOT_ACCESSOR
 
 #define ROOT_ACCESSOR(type, name, CamelName)                                   \
-  void Heap::set_##name(type* value) {                                         \
+  void Heap::set_##name(type value) {                                          \
     /* The deserializer makes use of the fact that these common roots are */   \
     /* never in new space and never on a page that is being compacted.    */   \
     DCHECK_IMPLIES(deserialization_complete(),                                 \
@@ -372,6 +374,21 @@ bool Heap::InNewSpace(HeapObject* heap_object) {
 }
 
 // static
+bool Heap::InNewSpace(HeapObjectPtr heap_object) {
+  bool result = MemoryChunk::FromHeapObject(heap_object)->InNewSpace();
+#ifdef DEBUG
+  // If in NEW_SPACE, then check we're either not in the middle of GC or the
+  // object is in to-space.
+  if (result) {
+    // If the object is in NEW_SPACE, then it's not in RO_SPACE so this is safe.
+    Heap* heap = Heap::FromWritableHeapObject(&heap_object);
+    DCHECK(heap->gc_state_ != NOT_IN_GC || InToSpace(heap_object));
+  }
+#endif
+  return result;
+}
+
+// static
 bool Heap::InFromSpace(Object* object) {
   DCHECK(!HasWeakHeapObjectTag(object));
   return object->IsHeapObject() && InFromSpace(HeapObject::cast(object));
@@ -406,6 +423,11 @@ bool Heap::InToSpace(HeapObject* heap_object) {
   return MemoryChunk::FromHeapObject(heap_object)->IsFlagSet(Page::IN_TO_SPACE);
 }
 
+// static
+bool Heap::InToSpace(HeapObjectPtr heap_object) {
+  return MemoryChunk::FromHeapObject(heap_object)->IsFlagSet(Page::IN_TO_SPACE);
+}
+
 bool Heap::InOldSpace(Object* object) { return old_space_->Contains(object); }
 
 bool Heap::InReadOnlySpace(Object* object) {
@@ -423,6 +445,19 @@ bool Heap::InOldSpaceSlow(Address address) {
 // static
 Heap* Heap::FromWritableHeapObject(const HeapObject* obj) {
   MemoryChunk* chunk = MemoryChunk::FromHeapObject(obj);
+  // RO_SPACE can be shared between heaps, so we can't use RO_SPACE objects to
+  // find a heap. The exception is when the ReadOnlySpace is writeable, during
+  // bootstrapping, so explicitly allow this case.
+  SLOW_DCHECK(chunk->owner()->identity() != RO_SPACE ||
+              static_cast<ReadOnlySpace*>(chunk->owner())->writable());
+  Heap* heap = chunk->heap();
+  SLOW_DCHECK(heap != nullptr);
+  return heap;
+}
+
+// static
+Heap* Heap::FromWritableHeapObject(const HeapObjectPtr* obj) {
+  MemoryChunk* chunk = MemoryChunk::FromHeapObject(*obj);
   // RO_SPACE can be shared between heaps, so we can't use RO_SPACE objects to
   // find a heap. The exception is when the ReadOnlySpace is writeable, during
   // bootstrapping, so explicitly allow this case.
@@ -553,7 +588,8 @@ Oddball* Heap::ToBoolean(bool condition) {
 
 uint64_t Heap::HashSeed() {
   uint64_t seed;
-  hash_seed()->copy_out(0, reinterpret_cast<byte*>(&seed), kInt64Size);
+  ReadOnlyRoots(this).hash_seed()->copy_out(0, reinterpret_cast<byte*>(&seed),
+                                            kInt64Size);
   DCHECK(FLAG_randomize_hashes || seed == 0);
   return seed;
 }

@@ -47,7 +47,21 @@ class V8_EXPORT_PRIVATE Zone final {
 
   // Allocate 'size' bytes of memory in the Zone; expands the Zone by
   // allocating new segments of memory on demand using malloc().
-  void* New(size_t size);
+  void* New(size_t size) {
+#ifdef V8_USE_ADDRESS_SANITIZER
+    return AsanNew(size);
+#else
+    size = RoundUp(size, kAlignmentInBytes);
+    Address result = position_;
+    if (V8_UNLIKELY(size > limit_ - position_)) {
+      result = NewExpand(size);
+    } else {
+      position_ += size;
+    }
+    return reinterpret_cast<void*>(result);
+#endif
+  }
+  void* AsanNew(size_t size);
 
   template <typename T>
   T* NewArray(size_t length) {
@@ -70,7 +84,10 @@ class V8_EXPORT_PRIVATE Zone final {
 
   const char* name() const { return name_; }
 
-  size_t allocation_size() const { return allocation_size_; }
+  size_t allocation_size() const {
+    size_t extra = segment_head_ ? position_ - segment_head_->start() : 0;
+    return allocation_size_ + extra;
+  }
 
   AccountingAllocator* allocator() const { return allocator_; }
 
@@ -208,6 +225,9 @@ class ZoneList final {
   V8_INLINE int capacity() const { return capacity_; }
 
   Vector<T> ToVector() const { return Vector<T>(data_, length_); }
+  Vector<T> ToVector(int start, int length) const {
+    return Vector<T>(data_ + start, Min(length_ - start, length));
+  }
 
   Vector<const T> ToConstVector() const {
     return Vector<const T>(data_, length_);
@@ -300,6 +320,47 @@ class ZoneList final {
 // zone as the list object.
 template <typename T>
 using ZonePtrList = ZoneList<T*>;
+
+template <typename T>
+class ScopedPtrList final {
+ public:
+  ScopedPtrList(Zone* zone, ZonePtrList<T>* buffer)
+      : zone_(zone),
+        buffer_(buffer),
+        start_(buffer->length()),
+        end_(buffer->length()) {}
+
+  ~ScopedPtrList() {
+    DCHECK_EQ(buffer_->length(), end_);
+    buffer_->Rewind(start_);
+  }
+
+  int length() const { return end_ - start_; }
+  T* at(int i) const { return buffer_->at(i + start_); }
+
+  void CopyTo(ZonePtrList<T>* target) const {
+    target->Initialize(length(), zone_);
+    target->AddAll(buffer_->ToVector(start_, length()), zone_);
+  }
+
+  void Add(T* value) {
+    DCHECK_EQ(buffer_->length(), end_);
+    buffer_->Add(value, zone_);
+    ++end_;
+  }
+
+  void AddAll(const ZonePtrList<T>& list) {
+    DCHECK_EQ(buffer_->length(), end_);
+    buffer_->AddAll(list, zone_);
+    end_ += list.length();
+  }
+
+ private:
+  Zone* zone_;
+  ZonePtrList<T>* buffer_;
+  int start_;
+  int end_;
+};
 
 // ZoneThreadedList is a special variant of the ThreadedList that can be put
 // into a Zone.

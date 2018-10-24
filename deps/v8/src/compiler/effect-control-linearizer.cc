@@ -694,6 +694,9 @@ bool EffectControlLinearizer::TryWireInStateEffect(Node* node,
     case IrOpcode::kCheckReceiver:
       result = LowerCheckReceiver(node, frame_state);
       break;
+    case IrOpcode::kCheckReceiverOrNullOrUndefined:
+      result = LowerCheckReceiverOrNullOrUndefined(node, frame_state);
+      break;
     case IrOpcode::kCheckSymbol:
       result = LowerCheckSymbol(node, frame_state);
       break;
@@ -1601,6 +1604,29 @@ Node* EffectControlLinearizer::LowerCheckReceiver(Node* node,
       __ Uint32Constant(FIRST_JS_RECEIVER_TYPE), value_instance_type);
   __ DeoptimizeIfNot(DeoptimizeReason::kNotAJavaScriptObject, VectorSlotPair(),
                      check, frame_state);
+  return value;
+}
+
+Node* EffectControlLinearizer::LowerCheckReceiverOrNullOrUndefined(
+    Node* node, Node* frame_state) {
+  Node* value = node->InputAt(0);
+
+  Node* value_map = __ LoadField(AccessBuilder::ForMap(), value);
+  Node* value_instance_type =
+      __ LoadField(AccessBuilder::ForMapInstanceType(), value_map);
+
+  // Rule out all primitives except oddballs (true, false, undefined, null).
+  STATIC_ASSERT(LAST_PRIMITIVE_TYPE == ODDBALL_TYPE);
+  STATIC_ASSERT(LAST_TYPE == LAST_JS_RECEIVER_TYPE);
+  Node* check0 = __ Uint32LessThanOrEqual(__ Uint32Constant(ODDBALL_TYPE),
+                                          value_instance_type);
+  __ DeoptimizeIfNot(DeoptimizeReason::kNotAJavaScriptObjectOrNullOrUndefined,
+                     VectorSlotPair(), check0, frame_state);
+
+  // Rule out booleans.
+  Node* check1 = __ WordEqual(value_map, __ BooleanMapConstant());
+  __ DeoptimizeIf(DeoptimizeReason::kNotAJavaScriptObjectOrNullOrUndefined,
+                  VectorSlotPair(), check1, frame_state);
   return value;
 }
 

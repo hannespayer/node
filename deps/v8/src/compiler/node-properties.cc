@@ -416,8 +416,7 @@ NodeProperties::InferReceiverMapsResult NodeProperties::InferReceiverMaps(
             if (original_constructor.has_initial_map()) {
               original_constructor.Serialize();
               MapRef initial_map = original_constructor.initial_map();
-              if (initial_map.constructor_or_backpointer().equals(
-                      mtarget.Ref(broker))) {
+              if (initial_map.GetConstructor().equals(mtarget.Ref(broker))) {
                 *maps_return = ZoneHandleSet<Map>(initial_map.object());
                 return result;
               }
@@ -425,6 +424,16 @@ NodeProperties::InferReceiverMapsResult NodeProperties::InferReceiverMaps(
           }
           // We reached the allocation of the {receiver}.
           return kNoReceiverMaps;
+        }
+        break;
+      }
+      case IrOpcode::kJSCreatePromise: {
+        if (IsSame(receiver, effect)) {
+          *maps_return = ZoneHandleSet<Map>(broker->native_context()
+                                                .promise_function()
+                                                .initial_map()
+                                                .object());
+          return result;
         }
         break;
       }

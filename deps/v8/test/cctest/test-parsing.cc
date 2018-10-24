@@ -79,6 +79,24 @@ TEST(IsContextualKeyword) {
   }
 }
 
+bool TokenIsAutoSemicolon(Token::Value token) {
+  switch (token) {
+    case Token::SEMICOLON:
+    case Token::EOS:
+    case Token::RBRACE:
+      return true;
+    default:
+      return false;
+  }
+}
+
+TEST(AutoSemicolonToken) {
+  for (int i = 0; i < Token::NUM_TOKENS; i++) {
+    Token::Value token = static_cast<Token::Value>(i);
+    CHECK_EQ(TokenIsAutoSemicolon(token), Token::IsAutoSemicolon(token));
+  }
+}
+
 bool TokenIsAnyIdentifier(Token::Value token) {
   switch (token) {
     case Token::IDENTIFIER:
@@ -361,8 +379,8 @@ bool TokenIsPropertyOrCall(Token::Value token) {
     case Token::TEMPLATE_SPAN:
     case Token::TEMPLATE_TAIL:
     case Token::PERIOD:
-    case Token::LPAREN:
     case Token::LBRACK:
+    case Token::LPAREN:
       return true;
     default:
       return false;
@@ -373,6 +391,25 @@ TEST(IsPropertyOrCall) {
   for (int i = 0; i < Token::NUM_TOKENS; i++) {
     Token::Value token = static_cast<Token::Value>(i);
     CHECK_EQ(TokenIsPropertyOrCall(token), Token::IsPropertyOrCall(token));
+  }
+}
+
+bool TokenIsProperty(Token::Value token) {
+  switch (token) {
+    case Token::TEMPLATE_SPAN:
+    case Token::TEMPLATE_TAIL:
+    case Token::PERIOD:
+    case Token::LBRACK:
+      return true;
+    default:
+      return false;
+  }
+}
+
+TEST(IsProperty) {
+  for (int i = 0; i < Token::NUM_TOKENS; i++) {
+    Token::Value token = static_cast<Token::Value>(i);
+    CHECK_EQ(TokenIsProperty(token), Token::IsProperty(token));
   }
 }
 

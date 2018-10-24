@@ -476,21 +476,19 @@ class Code;
 class CodeSpace;
 class CodeStub;
 class Context;
+class DeclarationScope;
 class Debug;
 class DebugInfo;
 class Descriptor;
 class DescriptorArray;
 class TransitionArray;
 class ExternalReference;
+class FeedbackVector;
 class FixedArray;
+class Foreign;
 class FreeStoreAllocationPolicy;
 class FunctionTemplateInfo;
-class MemoryChunk;
-class NumberDictionary;
-class SimpleNumberDictionary;
-class NameDictionary;
 class GlobalDictionary;
-template <typename T> class MaybeHandle;
 template <typename T> class Handle;
 class Heap;
 class HeapObject;
@@ -507,34 +505,38 @@ class MacroAssembler;
 class Map;
 class MapSpace;
 class MarkCompactCollector;
+template <typename T>
+class MaybeHandle;
 class MaybeObject;
+class MemoryChunk;
+class MessageLocation;
+class ModuleScope;
+class Name;
+class NameDictionary;
 class NewSpace;
 class NewLargeObjectSpace;
+class NumberDictionary;
 class Object;
+class ObjectSlot;
 class OldSpace;
 class ParameterCount;
 class ReadOnlySpace;
-class Foreign;
+class RelocInfo;
 class Scope;
-class DeclarationScope;
-class ModuleScope;
 class ScopeInfo;
 class Script;
+class SimpleNumberDictionary;
 class Smi;
 template <typename Config, class Allocator = FreeStoreAllocationPolicy>
 class SplayTree;
 class String;
-class Symbol;
-class Name;
 class Struct;
-class FeedbackVector;
+class Symbol;
 class Variable;
-class RelocInfo;
-class MessageLocation;
 
-typedef bool (*WeakSlotCallback)(Object** pointer);
+typedef bool (*WeakSlotCallback)(ObjectSlot pointer);
 
-typedef bool (*WeakSlotCallbackWithHeap)(Heap* heap, Object** pointer);
+typedef bool (*WeakSlotCallbackWithHeap)(Heap* heap, ObjectSlot pointer);
 
 // -----------------------------------------------------------------------------
 // Miscellaneous
@@ -1307,27 +1309,28 @@ class BinaryOperationFeedback {
 // at different points by performing an 'OR' operation. Type feedback moves
 // to a more generic type when we combine feedback.
 //
-//   kSignedSmall -> kNumber             -> kNumberOrOddball -> kAny
-//                   kInternalizedString -> kString          -> kAny
-//                                          kSymbol          -> kAny
-//                                          kBigInt          -> kAny
-//                                          kReceiver        -> kAny
+//   kSignedSmall -> kNumber             -> kNumberOrOddball           -> kAny
+//                   kReceiver           -> kReceiverOrNullOrUndefined -> kAny
+//                   kInternalizedString -> kString                    -> kAny
+//                                          kSymbol                    -> kAny
+//                                          kBigInt                    -> kAny
 //
 // This is distinct from BinaryOperationFeedback on purpose, because the
 // feedback that matters differs greatly as well as the way it is consumed.
 class CompareOperationFeedback {
  public:
   enum {
-    kNone = 0x00,
-    kSignedSmall = 0x01,
-    kNumber = 0x3,
-    kNumberOrOddball = 0x7,
-    kInternalizedString = 0x8,
-    kString = 0x18,
-    kSymbol = 0x20,
-    kBigInt = 0x30,
-    kReceiver = 0x40,
-    kAny = 0xff
+    kNone = 0x000,
+    kSignedSmall = 0x001,
+    kNumber = 0x003,
+    kNumberOrOddball = 0x007,
+    kInternalizedString = 0x008,
+    kString = 0x018,
+    kSymbol = 0x020,
+    kBigInt = 0x040,
+    kReceiver = 0x080,
+    kReceiverOrNullOrUndefined = 0x180,
+    kAny = 0x1ff
   };
 };
 
@@ -1540,6 +1543,10 @@ V8_INLINE static bool HasWeakHeapObjectTag(const internal::MaybeObject* value) {
 V8_INLINE static bool HasWeakHeapObjectTag(const Object* value) {
   return ((reinterpret_cast<intptr_t>(value) & kHeapObjectTagMask) ==
           kWeakHeapObjectTag);
+}
+
+V8_INLINE static bool HasWeakHeapObjectTag(const Address value) {
+  return (value & kHeapObjectTagMask) == kWeakHeapObjectTag;
 }
 
 V8_INLINE static bool IsClearedWeakHeapObject(const MaybeObject* value) {

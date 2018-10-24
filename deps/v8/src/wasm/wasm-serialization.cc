@@ -268,6 +268,9 @@ size_t NativeModuleSerializer::Measure() const {
 }
 
 void NativeModuleSerializer::WriteHeader(Writer* writer) {
+  // TODO(eholk): We need to properly preserve the flag whether the trap
+  // handler was used or not when serializing.
+
   writer->Write(native_module_->num_functions());
   writer->Write(native_module_->num_imported_functions());
 }
@@ -549,23 +552,16 @@ MaybeHandle<WasmModuleObject> DeserializeNativeModule(
   ModuleResult decode_result = DecodeWasmModule(
       enabled_features, wire_bytes.start(), wire_bytes.end(), false,
       i::wasm::kWasmOrigin, isolate->counters(), isolate->allocator());
-  if (!decode_result.ok()) return {};
-  CHECK_NOT_NULL(decode_result.val);
-  WasmModule* module = decode_result.val.get();
+  if (decode_result.failed()) return {};
+  CHECK_NOT_NULL(decode_result.value());
+  WasmModule* module = decode_result.value().get();
   Handle<Script> script =
       CreateWasmScript(isolate, wire_bytes, module->source_map_url);
-
-  // TODO(eholk): We need to properly preserve the flag whether the trap
-  // handler was used or not when serializing.
-  UseTrapHandler use_trap_handler =
-      trap_handler::IsTrapHandlerEnabled() ? kUseTrapHandler : kNoTrapHandler;
-  ModuleEnv env(module, use_trap_handler,
-                RuntimeExceptionSupport::kRuntimeExceptionSupport);
 
   OwnedVector<uint8_t> wire_bytes_copy = OwnedVector<uint8_t>::Of(wire_bytes);
 
   Handle<WasmModuleObject> module_object = WasmModuleObject::New(
-      isolate, enabled_features, std::move(decode_result.val), env,
+      isolate, enabled_features, std::move(decode_result).value(),
       std::move(wire_bytes_copy), script, Handle<ByteArray>::null());
   NativeModule* native_module = module_object->native_module();
 

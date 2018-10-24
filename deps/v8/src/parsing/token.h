@@ -55,9 +55,8 @@ namespace internal {
   T(name, string, precedence)
 
 #define TOKEN_LIST(T, K, C)                                        \
-  /* End of source indicator. */                                   \
-  T(EOS, "EOS", 0)                                                 \
                                                                    \
+  /* BEGIN Property */                                             \
   /* BEGIN PropertyOrCall */                                       \
   /* ES6 Template Literals */                                      \
   T(TEMPLATE_SPAN, nullptr, 0)                                     \
@@ -65,20 +64,25 @@ namespace internal {
                                                                    \
   /* Punctuators (ECMA-262, section 7.7, page 15). */              \
   T(PERIOD, ".", 0)                                                \
-  T(LPAREN, "(", 0)                                                \
   T(LBRACK, "[", 0)                                                \
+  /* END Property */                                               \
+  T(LPAREN, "(", 0)                                                \
   /* END PropertyOrCall */                                         \
   T(RPAREN, ")", 0)                                                \
   T(RBRACK, "]", 0)                                                \
   T(LBRACE, "{", 0)                                                \
-  T(RBRACE, "}", 0)                                                \
   T(COLON, ":", 0)                                                 \
-  T(SEMICOLON, ";", 0)                                             \
   T(ELLIPSIS, "...", 0)                                            \
   T(CONDITIONAL, "?", 3)                                           \
   T(INC, "++", 0)                                                  \
   T(DEC, "--", 0)                                                  \
   T(ARROW, "=>", 0)                                                \
+  /* BEGIN AutoSemicolon */                                        \
+  T(SEMICOLON, ";", 0)                                             \
+  T(RBRACE, "}", 0)                                                \
+  /* End of source indicator. */                                   \
+  T(EOS, "EOS", 0)                                                 \
+  /* END AutoSemicolon */                                          \
                                                                    \
   /* Assignment operators. */                                      \
   /* IsAssignmentOp() relies on this block of enum values being */ \
@@ -241,6 +245,10 @@ class Token {
 
   static bool IsCallable(Value token) { return IsInRange(token, SUPER, ENUM); }
 
+  static bool IsAutoSemicolon(Value token) {
+    return IsInRange(token, SEMICOLON, EOS);
+  }
+
   static bool IsAnyIdentifier(Value token) {
     return IsInRange(token, IDENTIFIER, ENUM);
   }
@@ -253,8 +261,12 @@ class Token {
     return IsInRange(token, NULL_LITERAL, STRING);
   }
 
-  static bool IsPropertyOrCall(Value token) {
+  static bool IsProperty(Value token) {
     return IsInRange(token, TEMPLATE_SPAN, LBRACK);
+  }
+
+  static bool IsPropertyOrCall(Value token) {
+    return IsInRange(token, TEMPLATE_SPAN, LPAREN);
   }
 
   static bool IsAssignmentOp(Value token) {

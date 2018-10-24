@@ -9,6 +9,7 @@
 #define INTERNALIZED_STRING_LIST_GENERATOR_INTL(V, _)               \
   V(_, breakType_string, "breakType")                               \
   V(_, calendar_string, "calendar")                                 \
+  V(_, cardinal_string, "cardinal")                                 \
   V(_, caseFirst_string, "caseFirst")                               \
   V(_, day_string, "day")                                           \
   V(_, dayPeriod_string, "dayPeriod")                               \
@@ -29,9 +30,12 @@
   V(_, collation_string, "collation")                               \
   V(_, currency_string, "currency")                                 \
   V(_, currencyDisplay_string, "currencyDisplay")                   \
+  V(_, ideo_string, "ideo")                                         \
   V(_, ignorePunctuation_string, "ignorePunctuation")               \
   V(_, Invalid_Date_string, "Invalid Date")                         \
   V(_, integer_string, "integer")                                   \
+  V(_, kana_string, "kana")                                         \
+  V(_, letter_string, "letter")                                     \
   V(_, lineBreakStyle_string, "lineBreakStyle")                     \
   V(_, literal_string, "literal")                                   \
   V(_, locale_string, "locale")                                     \
@@ -51,6 +55,7 @@
   V(_, normal_string, "normal")                                     \
   V(_, numberingSystem_string, "numberingSystem")                   \
   V(_, numeric_string, "numeric")                                   \
+  V(_, ordinal_string, "ordinal")                                   \
   V(_, percentSign_string, "percentSign")                           \
   V(_, plusSign_string, "plusSign")                                 \
   V(_, quarter_string, "quarter")                                   \
@@ -66,6 +71,7 @@
   V(_, timeZone_string, "timeZone")                                 \
   V(_, timeZoneName_string, "timeZoneName")                         \
   V(_, type_string, "type")                                         \
+  V(_, unknown_string, "unknown")                                   \
   V(_, upper_string, "upper")                                       \
   V(_, usage_string, "usage")                                       \
   V(_, useGrouping_string, "useGrouping")                           \
@@ -113,6 +119,7 @@
   V(_, cell_value_string, "%cell_value")                              \
   V(_, char_at_string, "CharAt")                                      \
   V(_, character_string, "character")                                 \
+  V(_, clear_string, "clear")                                         \
   V(_, closure_string, "(closure)")                                   \
   V(_, code_string, "code")                                           \
   V(_, column_string, "column")                                       \
@@ -234,6 +241,8 @@
   V(_, raw_string, "raw")                                             \
   V(_, ReconfigureToDataProperty_string, "ReconfigureToDataProperty") \
   V(_, ReferenceError_string, "ReferenceError")                       \
+  V(_, ReflectGet_string, "Reflect.get")                              \
+  V(_, ReflectHas_string, "Reflect.has")                              \
   V(_, RegExp_string, "RegExp")                                       \
   V(_, regexp_to_string, "[object RegExp]")                           \
   V(_, reject_string, "reject")                                       \
@@ -311,8 +320,6 @@
   V(_, frozen_symbol)                       \
   V(_, generic_symbol)                      \
   V(_, home_object_symbol)                  \
-  V(_, intl_initialized_marker_symbol)      \
-  V(_, intl_resolved_symbol)                \
   V(_, interpreter_trampoline_symbol)       \
   V(_, megamorphic_symbol)                  \
   V(_, native_context_index_symbol)         \
@@ -402,6 +409,7 @@
   F(MC_EVACUATE_UPDATE_POINTERS_SLOTS_MAP_SPACE)     \
   F(MC_EVACUATE_UPDATE_POINTERS_TO_NEW_ROOTS)        \
   F(MC_EVACUATE_UPDATE_POINTERS_WEAK)                \
+  F(MC_FINISH_WRAPPER_EPILOGUE)                      \
   F(MC_MARK_FINISH_INCREMENTAL)                      \
   F(MC_MARK_MAIN)                                    \
   F(MC_MARK_ROOTS)                                   \
@@ -413,7 +421,6 @@
   F(MC_MARK_WEAK_CLOSURE_WEAK_ROOTS)                 \
   F(MC_MARK_WEAK_CLOSURE_HARMONY)                    \
   F(MC_MARK_WRAPPERS)                                \
-  F(MC_MARK_WRAPPER_EPILOGUE)                        \
   F(MC_MARK_WRAPPER_PROLOGUE)                        \
   F(MC_MARK_WRAPPER_TRACING)                         \
   F(MC_SWEEP_CODE)                                   \

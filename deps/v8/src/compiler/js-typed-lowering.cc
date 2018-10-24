@@ -51,6 +51,7 @@ class JSBinopReduction final {
       case CompareOperationHint::kSymbol:
       case CompareOperationHint::kBigInt:
       case CompareOperationHint::kReceiver:
+      case CompareOperationHint::kReceiverOrNullOrUndefined:
       case CompareOperationHint::kInternalizedString:
         break;
     }
@@ -69,6 +70,13 @@ class JSBinopReduction final {
     return (CompareOperationHintOf(node_->op()) ==
             CompareOperationHint::kReceiver) &&
            BothInputsMaybe(Type::Receiver());
+  }
+
+  bool IsReceiverOrNullOrUndefinedCompareOperation() {
+    DCHECK_EQ(1, node_->op()->EffectOutputCount());
+    return (CompareOperationHintOf(node_->op()) ==
+            CompareOperationHint::kReceiverOrNullOrUndefined) &&
+           BothInputsMaybe(Type::ReceiverOrNullOrUndefined());
   }
 
   bool IsStringCompareOperation() {
@@ -122,6 +130,15 @@ class JSBinopReduction final {
     update_effect(left_input);
   }
 
+  // Inserts a CheckReceiverOrNullOrUndefined for the left input.
+  void CheckLeftInputToReceiverOrNullOrUndefined() {
+    Node* left_input =
+        graph()->NewNode(simplified()->CheckReceiverOrNullOrUndefined(), left(),
+                         effect(), control());
+    node_->ReplaceInput(0, left_input);
+    update_effect(left_input);
+  }
+
   // Checks that both inputs are Receiver, and if we don't know
   // statically that one side is already a Receiver, insert a
   // CheckReceiver node.
@@ -132,6 +149,22 @@ class JSBinopReduction final {
     if (!right_type().Is(Type::Receiver())) {
       Node* right_input = graph()->NewNode(simplified()->CheckReceiver(),
                                            right(), effect(), control());
+      node_->ReplaceInput(1, right_input);
+      update_effect(right_input);
+    }
+  }
+
+  // Checks that both inputs are Receiver, Null or Undefined and if
+  // we don't know statically that one side is already a Receiver,
+  // Null or Undefined, insert CheckReceiverOrNullOrUndefined nodes.
+  void CheckInputsToReceiverOrNullOrUndefined() {
+    if (!left_type().Is(Type::ReceiverOrNullOrUndefined())) {
+      CheckLeftInputToReceiverOrNullOrUndefined();
+    }
+    if (!right_type().Is(Type::ReceiverOrNullOrUndefined())) {
+      Node* right_input =
+          graph()->NewNode(simplified()->CheckReceiverOrNullOrUndefined(),
+                           right(), effect(), control());
       node_->ReplaceInput(1, right_input);
       update_effect(right_input);
     }
@@ -821,6 +854,46 @@ Reduction JSTypedLowering::ReduceJSEqual(Node* node) {
   } else if (r.IsReceiverCompareOperation()) {
     r.CheckInputsToReceiver();
     return r.ChangeToPureOperator(simplified()->ReferenceEqual());
+  } else if (r.IsReceiverOrNullOrUndefinedCompareOperation()) {
+    // Check that both inputs are Receiver, Null or Undefined.
+    r.CheckInputsToReceiverOrNullOrUndefined();
+
+    // If one side is known to be a detectable receiver now, we
+    // can simply perform reference equality here, since this
+    // known detectable receiver is going to only match itself.
+    if (r.OneInputIs(Type::DetectableReceiver())) {
+      return r.ChangeToPureOperator(simplified()->ReferenceEqual());
+    }
+
+    // Known that both sides are Receiver, Null or Undefined, the
+    // abstract equality operation can be performed like this:
+    //
+    //   if ObjectIsUndetectable(left)
+    //     then ObjectIsUndetectable(right)
+    //     else ReferenceEqual(left, right)
+    //
+    Node* left = r.left();
+    Node* right = r.right();
+    Node* effect = r.effect();
+    Node* control = r.control();
+
+    Node* check = graph()->NewNode(simplified()->ObjectIsUndetectable(), left);
+    Node* branch =
+        graph()->NewNode(common()->Branch(BranchHint::kFalse), check, control);
+
+    Node* if_true = graph()->NewNode(common()->IfTrue(), branch);
+    Node* vtrue = graph()->NewNode(simplified()->ObjectIsUndetectable(), right);
+
+    Node* if_false = graph()->NewNode(common()->IfFalse(), branch);
+    Node* vfalse =
+        graph()->NewNode(simplified()->ReferenceEqual(), left, right);
+
+    control = graph()->NewNode(common()->Merge(2), if_true, if_false);
+    Node* value =
+        graph()->NewNode(common()->Phi(MachineRepresentation::kTagged, 2),
+                         vtrue, vfalse, control);
+    ReplaceWithValue(node, value, effect, control);
+    return Replace(value);
   } else if (r.IsStringCompareOperation()) {
     r.CheckInputsToString();
     return r.ChangeToPureOperator(simplified()->StringEqual());
@@ -880,6 +953,13 @@ Reduction JSTypedLowering::ReduceJSStrictEqual(Node* node) {
     // as a strict equality comparison with a Receiver can only yield true if
     // both sides refer to the same Receiver.
     r.CheckLeftInputToReceiver();
+    return r.ChangeToPureOperator(simplified()->ReferenceEqual());
+  } else if (r.IsReceiverOrNullOrUndefinedCompareOperation()) {
+    // For strict equality, it's enough to know that one input is a Receiver,
+    // Null or Undefined, as a strict equality comparison with a Receiver,
+    // Null or Undefined can only yield true if both sides refer to the same
+    // instance.
+    r.CheckLeftInputToReceiverOrNullOrUndefined();
     return r.ChangeToPureOperator(simplified()->ReferenceEqual());
   } else if (r.IsStringCompareOperation()) {
     r.CheckInputsToString();

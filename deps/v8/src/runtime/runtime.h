@@ -129,8 +129,9 @@ namespace internal {
   F(DebugPopPromise, 0, 1)                      \
   F(DebugPrepareStepInSuspendedGenerator, 0, 1) \
   F(DebugPushPromise, 1, 1)                     \
-  F(DebugAsyncFunctionSuspended, 1, 1)          \
+  F(DebugAsyncFunctionEntered, 1, 1)            \
   F(DebugAsyncFunctionFinished, 2, 1)           \
+  F(DebugAsyncFunctionSuspended, 1, 1)          \
   F(DebugToggleBlockCoverage, 1, 1)             \
   F(DebugTogglePreciseCoverage, 1, 1)           \
   F(FunctionGetInferredName, 1, 1)              \
@@ -199,7 +200,6 @@ namespace internal {
 
 #ifdef V8_INTL_SUPPORT
 #define FOR_EACH_INTRINSIC_INTL(F, I) \
-  F(AvailableLocalesOf, 1, 1)         \
   F(CanonicalizeLanguageTag, 1, 1)    \
   F(DateCacheVersion, 0, 1)           \
   F(FormatList, 2, 1)                 \
@@ -537,8 +537,7 @@ namespace internal {
 #define FOR_EACH_INTRINSIC_WASM(F, I) \
   F(ThrowWasmError, 1, 1)             \
   F(ThrowWasmStackOverflow, 0, 1)     \
-  F(WasmExceptionGetElement, 2, 1)    \
-  F(WasmExceptionSetElement, 3, 1)    \
+  F(WasmExceptionGetValues, 1, 1)     \
   F(WasmExceptionGetTag, 1, 1)        \
   F(WasmGrowMemory, 2, 1)             \
   F(WasmRunInterpreter, 2, 1)         \
@@ -776,6 +775,7 @@ enum class OptimizationStatus {
   kOptimizingConcurrently = 1 << 9,
   kIsExecuting = 1 << 10,
   kTopmostFrameIsTurboFanned = 1 << 11,
+  kLiteMode = 1 << 12,
 };
 
 Smi* SmiLexicographicCompare(Smi* x_value, Smi* y_value);

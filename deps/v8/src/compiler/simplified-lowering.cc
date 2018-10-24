@@ -1034,7 +1034,6 @@ class RepresentationSelector {
       VisitUnop(node, UseInfo::CheckedHeapObjectAsTaggedPointer(),
                 MachineRepresentation::kTaggedPointer);
     }
-    return;
   }
 
   void VisitCall(Node* node, SimplifiedLowering* lowering) {
@@ -2602,6 +2601,10 @@ class RepresentationSelector {
       }
       case IrOpcode::kCheckReceiver: {
         VisitCheck(node, Type::Receiver(), lowering);
+        return;
+      }
+      case IrOpcode::kCheckReceiverOrNullOrUndefined: {
+        VisitCheck(node, Type::ReceiverOrNullOrUndefined(), lowering);
         return;
       }
       case IrOpcode::kCheckSmi: {

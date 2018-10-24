@@ -6487,10 +6487,12 @@ typedef void (*HostInitializeImportMetaObjectCallback)(Local<Context> context,
  * PrepareStackTraceCallback is called when the stack property of an error is
  * first accessed. The return value will be used as the stack value. If this
  * callback is registed, the |Error.prepareStackTrace| API will be disabled.
+ * |sites| is an array of call sites, specified in
+ * https://github.com/v8/v8/wiki/Stack-Trace-API
  */
 typedef MaybeLocal<Value> (*PrepareStackTraceCallback)(Local<Context> context,
                                                        Local<Value> error,
-                                                       Local<StackTrace> trace);
+                                                       Local<Array> sites);
 
 /**
  * PromiseHook with type kInit is called when a new promise is
@@ -7201,7 +7203,7 @@ class V8_EXPORT Isolate {
    */
   class V8_EXPORT DisallowJavascriptExecutionScope {
    public:
-    enum OnFailure { CRASH_ON_FAILURE, THROW_ON_FAILURE };
+    enum OnFailure { CRASH_ON_FAILURE, THROW_ON_FAILURE, DUMP_ON_FAILURE };
 
     DisallowJavascriptExecutionScope(Isolate* isolate, OnFailure on_failure);
     ~DisallowJavascriptExecutionScope();
@@ -7213,7 +7215,7 @@ class V8_EXPORT Isolate {
         const DisallowJavascriptExecutionScope&) = delete;
 
    private:
-    bool on_failure_;
+    OnFailure on_failure_;
     void* internal_;
   };
 
@@ -7235,6 +7237,7 @@ class V8_EXPORT Isolate {
    private:
     void* internal_throws_;
     void* internal_assert_;
+    void* internal_dump_;
   };
 
   /**
@@ -7360,6 +7363,7 @@ class V8_EXPORT Isolate {
     kDateToLocaleTimeString = 68,
     kAttemptOverrideReadOnlyOnPrototypeSloppy = 69,
     kAttemptOverrideReadOnlyOnPrototypeStrict = 70,
+    kOptimizedFunctionWithOneShotBytecode = 71,
 
     // If you add new values here, you'll also need to update Chromium's:
     // web_feature.mojom, UseCounterCallback.cpp, and enums.xml. V8 changes to

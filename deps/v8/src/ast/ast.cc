@@ -333,10 +333,12 @@ bool LiteralProperty::NeedsSetFunctionName() const {
 
 ClassLiteralProperty::ClassLiteralProperty(Expression* key, Expression* value,
                                            Kind kind, bool is_static,
-                                           bool is_computed_name)
+                                           bool is_computed_name,
+                                           bool is_private)
     : LiteralProperty(key, value, is_computed_name),
       kind_(kind),
       is_static_(is_static),
+      is_private_(is_private),
       private_or_computed_name_var_(nullptr) {}
 
 bool ObjectLiteral::Property::IsCompileTimeValue() const {
@@ -644,7 +646,7 @@ void ArrayLiteral::BuildBoilerplateDescription(Isolate* isolate) {
 
 bool ArrayLiteral::IsFastCloningSupported() const {
   return depth() <= 1 &&
-         values()->length() <=
+         values_.length() <=
              ConstructorBuiltins::kMaximumClonedShallowArrayElements;
 }
 
@@ -860,8 +862,11 @@ Call::CallType Call::GetCallType() const {
   return OTHER_CALL;
 }
 
-CaseClause::CaseClause(Expression* label, ZonePtrList<Statement>* statements)
-    : label_(label), statements_(statements) {}
+CaseClause::CaseClause(Expression* label,
+                       const ScopedPtrList<Statement>& statements)
+    : label_(label), statements_(0, nullptr) {
+  statements.CopyTo(&statements_);
+}
 
 bool Literal::IsPropertyName() const {
   if (type() != kString) return false;

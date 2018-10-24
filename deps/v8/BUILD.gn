@@ -83,15 +83,16 @@ declare_args() {
   v8_enable_fast_mksnapshot = false
 
   # Enable embedded builtins.
-  # TODO(jgruber,v8:6666): Support ia32 and maybe MSVC.
-  v8_enable_embedded_builtins = v8_use_snapshot && v8_current_cpu != "x86" &&
-                                !is_aix && (!is_win || is_clang)
+  # TODO(v8:6666): Support no-snapshot builds, aix and MSVC.
+  v8_enable_embedded_builtins =
+      v8_use_snapshot && !is_aix && (!is_win || is_clang)
 
   # Enable code-generation-time checking of types in the CodeStubAssembler.
   v8_enable_verify_csa = false
 
   # Enable pointer compression (sets -dV8_COMPRESS_POINTERS).
   v8_enable_pointer_compression = false
+  v8_enable_31bit_smis_on_64bit_arch = false
 
   # Interpreted regexp engine exists as platform-independent alternative
   # based where the regular expression is compiled to a bytecode.
@@ -339,6 +340,9 @@ config("features") {
   }
   if (v8_enable_pointer_compression) {
     defines += [ "V8_COMPRESS_POINTERS" ]
+  }
+  if (v8_enable_31bit_smis_on_64bit_arch) {
+    defines += [ "V8_31BIT_SMIS_ON_64BIT_ARCH" ]
   }
   if (v8_enable_object_print) {
     defines += [ "OBJECT_PRINT" ]
@@ -876,6 +880,8 @@ action("postmortem-metadata") {
     "src/objects/data-handler-inl.h",
     "src/objects/fixed-array-inl.h",
     "src/objects/fixed-array.h",
+    "src/objects/heap-object-inl.h",
+    "src/objects/heap-object.h",
     "src/objects/js-array-inl.h",
     "src/objects/js-array.h",
     "src/objects/js-array-buffer-inl.h",
@@ -916,7 +922,9 @@ torque_files = [
   "src/builtins/array-foreach.tq",
   "src/builtins/array-join.tq",
   "src/builtins/array-lastindexof.tq",
+  "src/builtins/array-of.tq",
   "src/builtins/array-reverse.tq",
+  "src/builtins/array-slice.tq",
   "src/builtins/array-splice.tq",
   "src/builtins/array-unshift.tq",
   "src/builtins/typed-array.tq",
@@ -969,20 +977,6 @@ action("run_torque") {
   foreach(file, torque_files) {
     args += [ rebase_path(file, root_build_dir) ]
   }
-}
-
-v8_header_set("torque_generated_core") {
-  visibility = [ ":*" ]  # Only targets in this file can depend on this.
-
-  deps = [
-    ":run_torque",
-  ]
-
-  sources = [
-    "$target_gen_dir/torque-generated/builtin-definitions-from-dsl.h",
-  ]
-
-  configs = [ ":internal_config" ]
 }
 
 v8_source_set("torque_generated_initializers") {
@@ -1179,6 +1173,7 @@ action("v8_dump_build_config") {
     "v8_use_snapshot=$v8_use_snapshot",
     "v8_enable_embedded_builtins=$v8_enable_embedded_builtins",
     "v8_enable_verify_csa=$v8_enable_verify_csa",
+    "v8_enable_lite_mode=$v8_enable_lite_mode",
   ]
 
   if (v8_current_cpu == "mips" || v8_current_cpu == "mipsel" ||
@@ -1908,6 +1903,8 @@ v8_source_set("v8_base") {
     "src/compiler/wasm-compiler.h",
     "src/compiler/zone-stats.cc",
     "src/compiler/zone-stats.h",
+    "src/constant-pool.cc",
+    "src/constant-pool.h",
     "src/contexts-inl.h",
     "src/contexts.cc",
     "src/contexts.h",
@@ -2146,8 +2143,6 @@ v8_source_set("v8_base") {
     "src/interpreter/interpreter-intrinsics.h",
     "src/interpreter/interpreter.cc",
     "src/interpreter/interpreter.h",
-    "src/intl.cc",
-    "src/intl.h",
     "src/isolate-data.h",
     "src/isolate-inl.h",
     "src/isolate.cc",
@@ -2219,7 +2214,8 @@ v8_source_set("v8_base") {
     "src/objects/frame-array.h",
     "src/objects/hash-table-inl.h",
     "src/objects/hash-table.h",
-    "src/objects/intl-objects-inl.h",
+    "src/objects/heap-object-inl.h",
+    "src/objects/heap-object.h",
     "src/objects/intl-objects.cc",
     "src/objects/intl-objects.h",
     "src/objects/js-array-buffer-inl.h",
@@ -2312,6 +2308,8 @@ v8_source_set("v8_base") {
     "src/objects/script.h",
     "src/objects/shared-function-info-inl.h",
     "src/objects/shared-function-info.h",
+    "src/objects/slots-inl.h",
+    "src/objects/slots.h",
     "src/objects/stack-frame-info-inl.h",
     "src/objects/stack-frame-info.h",
     "src/objects/string-inl.h",
@@ -2582,6 +2580,7 @@ v8_source_set("v8_base") {
     "src/wasm/baseline/liftoff-compiler.cc",
     "src/wasm/baseline/liftoff-compiler.h",
     "src/wasm/baseline/liftoff-register.h",
+    "src/wasm/compilation-environment.h",
     "src/wasm/decoder.h",
     "src/wasm/function-body-decoder-impl.h",
     "src/wasm/function-body-decoder.cc",
@@ -2955,7 +2954,7 @@ v8_source_set("v8_base") {
   defines = []
   deps = [
     ":generate_bytecode_builtins_list",
-    ":torque_generated_core",
+    ":run_torque",
     ":v8_headers",
     ":v8_libbase",
     ":v8_libsampler",
@@ -2973,9 +2972,6 @@ v8_source_set("v8_base") {
     sources -= [
       "src/builtins/builtins-intl.cc",
       "src/char-predicates.cc",
-      "src/intl.cc",
-      "src/intl.h",
-      "src/objects/intl-objects-inl.h",
       "src/objects/intl-objects.cc",
       "src/objects/intl-objects.h",
       "src/objects/js-break-iterator-inl.h",
@@ -3808,7 +3804,7 @@ v8_source_set("wasm_module_runner") {
 
   deps = [
     ":generate_bytecode_builtins_list",
-    ":torque_generated_core",
+    ":run_torque",
   ]
 
   if (v8_enable_i18n_support) {
@@ -3892,7 +3888,7 @@ v8_source_set("lib_wasm_fuzzer_common") {
 
   deps = [
     ":generate_bytecode_builtins_list",
-    ":torque_generated_core",
+    ":run_torque",
   ]
 
   if (v8_enable_i18n_support) {

@@ -284,6 +284,7 @@ class JSFunctionData : public JSObjectData {
 
   void Serialize(JSHeapBroker* broker);
 
+  ContextData* context() const { return context_; }
   NativeContextData* native_context() const { return native_context_; }
   MapData* initial_map() const { return initial_map_; }
   ObjectData* prototype() const { return prototype_; }
@@ -300,6 +301,7 @@ class JSFunctionData : public JSObjectData {
 
   bool serialized_ = false;
 
+  ContextData* context_ = nullptr;
   NativeContextData* native_context_ = nullptr;
   MapData* initial_map_ = nullptr;
   ObjectData* prototype_ = nullptr;
@@ -628,10 +630,10 @@ class MapData : public HeapObjectData {
     return instance_descriptors_;
   }
 
-  void SerializeConstructorOrBackpointer(JSHeapBroker* broker);
-  ObjectData* constructor_or_backpointer() const {
-    CHECK(serialized_constructor_or_backpointer_);
-    return constructor_or_backpointer_;
+  void SerializeConstructor(JSHeapBroker* broker);
+  ObjectData* GetConstructor() const {
+    CHECK(serialized_constructor_);
+    return constructor_;
   }
 
   void SerializePrototype(JSHeapBroker* broker);
@@ -658,8 +660,8 @@ class MapData : public HeapObjectData {
   bool serialized_own_descriptors_ = false;
   DescriptorArrayData* instance_descriptors_ = nullptr;
 
-  bool serialized_constructor_or_backpointer_ = false;
-  ObjectData* constructor_or_backpointer_ = nullptr;
+  bool serialized_constructor_ = false;
+  ObjectData* constructor_ = nullptr;
 
   bool serialized_prototype_ = false;
   ObjectData* prototype_ = nullptr;
@@ -749,11 +751,13 @@ void JSFunctionData::Serialize(JSHeapBroker* broker) {
   TraceScope tracer(broker, this, "JSFunctionData::Serialize");
   Handle<JSFunction> function = Handle<JSFunction>::cast(object());
 
+  DCHECK_NULL(context_);
   DCHECK_NULL(native_context_);
   DCHECK_NULL(initial_map_);
   DCHECK_NULL(prototype_);
   DCHECK_NULL(shared_);
 
+  context_ = broker->GetOrCreateData(function->context())->AsContext();
   native_context_ =
       broker->GetOrCreateData(function->native_context())->AsNativeContext();
   shared_ = broker->GetOrCreateData(function->shared())->AsSharedFunctionInfo();
@@ -769,7 +773,7 @@ void JSFunctionData::Serialize(JSHeapBroker* broker) {
     if (initial_map_->instance_type() == JS_ARRAY_TYPE) {
       initial_map_->SerializeElementsKindGeneralizations(broker);
     }
-    initial_map_->SerializeConstructorOrBackpointer(broker);
+    initial_map_->SerializeConstructor(broker);
     // TODO(neis): This is currently only needed for native_context's
     // object_function, as used by GetObjectCreateMap. If no further use sites
     // show up, we should move this into NativeContextData::Serialize.
@@ -1187,15 +1191,14 @@ void JSObjectData::SerializeElements(JSHeapBroker* broker) {
   elements_ = broker->GetOrCreateData(elements_object)->AsFixedArrayBase();
 }
 
-void MapData::SerializeConstructorOrBackpointer(JSHeapBroker* broker) {
-  if (serialized_constructor_or_backpointer_) return;
-  serialized_constructor_or_backpointer_ = true;
+void MapData::SerializeConstructor(JSHeapBroker* broker) {
+  if (serialized_constructor_) return;
+  serialized_constructor_ = true;
 
-  TraceScope tracer(broker, this, "MapData::SerializeConstructorOrBackpointer");
+  TraceScope tracer(broker, this, "MapData::SerializeConstructor");
   Handle<Map> map = Handle<Map>::cast(object());
-  DCHECK_NULL(constructor_or_backpointer_);
-  constructor_or_backpointer_ =
-      broker->GetOrCreateData(map->constructor_or_backpointer());
+  DCHECK_NULL(constructor_);
+  constructor_ = broker->GetOrCreateData(map->GetConstructor());
 }
 
 void MapData::SerializePrototype(JSHeapBroker* broker) {
@@ -2060,6 +2063,7 @@ BIMODAL_ACCESSOR(JSArray, Object, length)
 BIMODAL_ACCESSOR_C(JSFunction, bool, has_prototype)
 BIMODAL_ACCESSOR_C(JSFunction, bool, has_initial_map)
 BIMODAL_ACCESSOR_C(JSFunction, bool, PrototypeRequiresRuntimeLookup)
+BIMODAL_ACCESSOR(JSFunction, Context, context)
 BIMODAL_ACCESSOR(JSFunction, NativeContext, native_context)
 BIMODAL_ACCESSOR(JSFunction, Map, initial_map)
 BIMODAL_ACCESSOR(JSFunction, Object, prototype)
@@ -2070,18 +2074,21 @@ BIMODAL_ACCESSOR_C(JSTypedArray, size_t, length_value)
 BIMODAL_ACCESSOR(JSTypedArray, HeapObject, buffer)
 
 BIMODAL_ACCESSOR_B(Map, bit_field2, elements_kind, Map::ElementsKindBits)
+BIMODAL_ACCESSOR_B(Map, bit_field2, is_extensible, Map::IsExtensibleBit)
 BIMODAL_ACCESSOR_B(Map, bit_field3, is_deprecated, Map::IsDeprecatedBit)
 BIMODAL_ACCESSOR_B(Map, bit_field3, is_dictionary_map, Map::IsDictionaryMapBit)
 BIMODAL_ACCESSOR_B(Map, bit_field3, NumberOfOwnDescriptors,
                    Map::NumberOfOwnDescriptorsBits)
 BIMODAL_ACCESSOR_B(Map, bit_field, has_prototype_slot, Map::HasPrototypeSlotBit)
+BIMODAL_ACCESSOR_B(Map, bit_field, is_access_check_needed,
+                   Map::IsAccessCheckNeededBit)
 BIMODAL_ACCESSOR_B(Map, bit_field, is_callable, Map::IsCallableBit)
 BIMODAL_ACCESSOR_B(Map, bit_field, is_constructor, Map::IsConstructorBit)
 BIMODAL_ACCESSOR_B(Map, bit_field, is_undetectable, Map::IsUndetectableBit)
 BIMODAL_ACCESSOR_C(Map, int, instance_size)
 BIMODAL_ACCESSOR(Map, Object, prototype)
 BIMODAL_ACCESSOR_C(Map, InstanceType, instance_type)
-BIMODAL_ACCESSOR(Map, Object, constructor_or_backpointer)
+BIMODAL_ACCESSOR(Map, Object, GetConstructor)
 
 #define DEF_NATIVE_CONTEXT_ACCESSOR(type, name) \
   BIMODAL_ACCESSOR(NativeContext, type, name)
@@ -2456,15 +2463,19 @@ void NativeContextData::Serialize(JSHeapBroker* broker) {
   TraceScope tracer(broker, this, "NativeContextData::Serialize");
   Handle<NativeContext> context = Handle<NativeContext>::cast(object());
 
-#define SERIALIZE_MEMBER(type, name)                              \
-  DCHECK_NULL(name##_);                                           \
-  name##_ = broker->GetOrCreateData(context->name())->As##type(); \
-  if (name##_->IsJSFunction()) name##_->AsJSFunction()->Serialize(broker);
+#define SERIALIZE_MEMBER(type, name)                                       \
+  DCHECK_NULL(name##_);                                                    \
+  name##_ = broker->GetOrCreateData(context->name())->As##type();          \
+  if (name##_->IsJSFunction()) name##_->AsJSFunction()->Serialize(broker); \
+  if (name##_->IsMap()) name##_->AsMap()->SerializeConstructor(broker);
   BROKER_COMPULSORY_NATIVE_CONTEXT_FIELDS(SERIALIZE_MEMBER)
   if (!broker->isolate()->bootstrapper()->IsActive()) {
     BROKER_OPTIONAL_NATIVE_CONTEXT_FIELDS(SERIALIZE_MEMBER)
   }
 #undef SERIALIZE_MEMBER
+
+  bound_function_with_constructor_map_->SerializePrototype(broker);
+  bound_function_without_constructor_map_->SerializePrototype(broker);
 
   DCHECK(function_maps_.empty());
   int const first = Context::FIRST_FUNCTION_MAP_INDEX;
